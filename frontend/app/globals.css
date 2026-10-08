@@ -1,0 +1,123 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "react-super-responsive-table/dist/SuperResponsiveTableStyle.css" layer(components);
+@import "sileo/styles.css";
+
+@theme inline {
+  --font-sans: var(--font-institutional);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --guinda: #9b2247;
+  --guinda-dark: #611232;
+  --green: #1e5b4f;
+  --green-dark: #002f2a;
+  --gold: #a57f2c;
+  --sand: #e6d194;
+  --ink: #35262b;
+  --line: #e9e1d4;
+  --paper: #faf8f2;
+  --white: #fffefa;
+  --background: #faf8f2;
+  --foreground: #35262b;
+  --card: #fffefa;
+  --card-foreground: #35262b;
+  --popover: #fffefa;
+  --popover-foreground: #35262b;
+  --primary: #9b2247;
+  --primary-foreground: #ffffff;
+  --secondary: #f3ead3;
+  --secondary-foreground: #611232;
+  --muted: #f3eee3;
+  --muted-foreground: #76646b;
+  --accent: #f7edf0;
+  --accent-foreground: #611232;
+  --destructive: #9b2247;
+  --border: #e9e1d4;
+  --input: #d9cdbb;
+  --ring: #9b2247;
+  --radius: 0.75rem;
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground font-sans antialiased; }
+  button:not(:disabled) { cursor: pointer; }
+  input, button, select, textarea { font-family: inherit; }
+  [data-slot="dialog-overlay"] { background: #38102280; backdrop-filter: blur(4px); }
+}
+
+@layer components {
+  /* Pivot according to the available content width, including tablets with a sidebar. */
+  @container patient-table (max-width: 850px) {
+    .radiotherapy-table { display: block; }
+    .radiotherapy-table thead {
+      position: absolute; width: 1px; height: 1px; padding: 0;
+      overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+    }
+    .radiotherapy-table thead tr { position: static; }
+    .radiotherapy-table tbody { @apply block p-4; }
+    .radiotherapy-table tbody tr {
+      @apply grid grid-cols-2 gap-x-4 gap-y-4 rounded-xl border border-border bg-card p-4;
+      margin-bottom: 1rem;
+    }
+    .radiotherapy-table tbody tr:last-child { margin-bottom: 0; border-bottom-width: 1px; }
+    .radiotherapy-table td.pivoted {
+      display: block; min-width: 0; width: auto; max-width: none;
+      padding: 0 !important; text-align: left !important; white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .radiotherapy-table td:nth-child(1),
+    .radiotherapy-table td:nth-child(2),
+    .radiotherapy-table td:nth-child(5),
+    .radiotherapy-table td:nth-child(6) { grid-column: 1 / -1; }
+    .radiotherapy-table td .tdBefore {
+      @apply mb-2 block text-[10px] font-medium text-muted-foreground;
+      position: static; width: auto; white-space: normal;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* Keep Sileo inside narrow screens and above dialogs. */
+body [data-sileo-viewport] { z-index: 80; }
+@media (max-width: 381px) {
+  /* Sileo's SVG uses a fixed 350px canvas; scale text and geometry together. */
+  body [data-sileo-toast] { zoom: calc((100vw - 32px) / 350px); }
+}
+
+.network-journey-node { display: grid; min-width: 42px; justify-items: center; gap: 5px; color: #fff; }
+.network-journey-node small { font-size: 9px; line-height: 1; white-space: nowrap; }
+.network-journey-route { position: relative; display: flex; min-width: 18px; flex: 1; align-items: center; border-top: 2px dashed #ffffff80; color: #fff; }
+.network-journey-traveler { position: absolute; top: -9px; left: 0; filter: drop-shadow(0 1px 2px #124d40); animation: network-journey-move 1.25s ease-in-out both; }
+@keyframes network-journey-move { from { transform: translateX(0); } to { transform: translateX(calc(100% - 16px)); } }
+@media (prefers-reduced-motion: reduce) { .network-journey-traveler { animation: none; left: calc(100% - 16px); } }
+
+.status-journey-rail { position: absolute; top: 15px; right: 18%; left: 18%; height: 2px; background: #e9e1d4; }
+.status-journey-progress { height: 100%; background: #1e5b4f; transition: width 300ms ease; }
+@media (prefers-reduced-motion: reduce) { .status-journey-progress { transition: none; } }

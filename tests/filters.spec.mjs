@@ -1,0 +1,101 @@
+import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+
+test('períodos, rango inclusivo, búsqueda predictiva y reporte de todas las páginas', async ({ page, context }) => {
+  const marker = `filtros${Date.now()}`;
+  const ids = [];
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await context.addInitScript(() => { window.print = () => { window.printRequested = true; }; });
+  await page.clock.install({ time: new Date('2026-10-08T12:00:00') });
+  await page.goto('/');
+  await page.getByLabel('Correo electrónico', { exact: true }).fill('admin@bitacoras.local');
+  await page.getByLabel('Contraseña', { exact: true }).fill('Bitacoras2026!');
+  await page.getByRole('button', { name: 'Entrar al sistema' }).click();
+  await expect(page.getByRole('heading', { name: 'Bitácora de radioterapia' })).toBeVisible();
+  try {
+    for (let index = 0; index < 107; index++) {
+      const date = index < 103 ? '2026-10-08' : ['2026-10-05', '2026-10-11', '2026-10-04', '2026-10-12'][index - 103];
+      const result = await page.request.post('/api/records', { headers: { 'X-Bitacoras-Request': '1' }, data: { patient_name: `${index < 103 ? 'María' : 'Ana'} ${marker}`, date, rfc: 'LOHM900101AB1', surgery_type: index % 2 ? 'Ambulatorio' : 'Hospitalizado', arrival_time: '08:00', treatment_time: '08:30', status: 'Pendiente', observations: `Atención de prueba ${index}` } });
+      expect(result.status()).toBe(201);
+      ids.push((await result.json()).record.id);
+    }
+    const filters = page.getByRole('region', { name: 'Filtros de consulta' });
+    const search = page.getByRole('combobox', { name: 'Buscar pacientes' });
+    await search.fill(marker);
+    const count = value => expect(filters.locator('> div').last().getByRole('status')).toHaveText(`${value} registros encontrados`);
+    await count(103);
+    await page.getByRole('button', { name: 'Esta semana', exact: true }).click();
+    await count(105);
+    await expect(filters).toContainText('5 de octubre de 2026 al 11 de octubre de 2026');
+    await page.getByRole('button', { name: 'Página siguiente', exact: true }).click();
+    await expect(page.getByText('Página 2 de 14')).toBeVisible();
+    await page.getByRole('button', { name: 'Semana pasada', exact: true }).click();
+    await expect(filters.locator('> div').last().getByRole('status')).toHaveText('1 registro encontrado');
+    await expect(page.getByText('Página 1 de 1')).toBeVisible();
+    await page.getByRole('button', { name: 'Este mes', exact: true }).click();
+    await count(107);
+    await page.getByRole('button', { name: 'Ayer', exact: true }).click();
+    await count(0);
+    await expect(page.getByRole('button', { name: 'Ver todo el historial', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Todo el historial', exact: true }).click();
+    await count(107);
+    await page.getByLabel('O elige tus fechas').selectOption('range');
+    await page.getByLabel('Desde', { exact: true }).fill('2026-10-11');
+    await page.getByLabel('Hasta', { exact: true }).fill('2026-10-05');
+    await expect(page.getByRole('button', { name: 'Aplicar rango' })).toBeDisabled();
+    await expect(filters.getByRole('alert')).toContainText('igual o posterior');
+    await count(107);
+    await page.getByLabel('Desde', { exact: true }).fill('2026-10-08');
+    await page.getByLabel('Hasta', { exact: true }).fill('2026-10-08');
+    await page.getByRole('button', { name: 'Aplicar rango' }).click();
+    await count(103);
+    await search.fill(`maria ${marker}`);
+    const option = page.getByRole('option', { name: new RegExp(`María ${marker}`) });
+    await expect(option).toBeVisible();
+    await expect(option).toContainText('103 atenciones');
+    await search.press('ArrowDown');
+    await expect(option).toHaveAttribute('aria-selected', 'true');
+    await search.press('Enter');
+    await expect(search).toHaveValue(`María ${marker}`);
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await count(103);
+    await search.click();
+    await expect(option).toBeVisible();
+    await search.press('Escape');
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+    for (const width of [320, 768, 1440]) {
+      await page.setViewportSize({ width, height: 1000 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: `test-results/filtros-${width}.png`, fullPage: true });
+    }
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Exportar CSV', exact: true }).click();
+    const csv = await readFile(await (await download).path(), 'utf8');
+    expect(csv.trim().split('\r\n')).toHaveLength(104);
+    const popup = page.waitForEvent('popup');
+    await page.getByRole('button', { name: 'Imprimir / PDF', exact: true }).click();
+    const report = await popup;
+    await expect(report.locator('tbody tr')).toHaveCount(103);
+    await expect(report.locator('header')).toContainText('103 registros');
+    await expect(report.locator('header')).toContainText('8 de octubre de 2026 al 8 de octubre de 2026');
+    await expect(report.locator('tbody')).toContainText('Atención de prueba 102');
+    await expect(report.getByRole('columnheader', { name: 'RFC', exact: true })).toBeVisible();
+    await expect(report.getByRole('columnheader', { name: 'Tipo de cirugía', exact: true })).toBeVisible();
+    await expect(report.locator('tbody')).toContainText('LOHM900101AB1');
+    await expect(report.locator('tbody')).toContainText('Hospitalizado');
+    await expect(report.locator('tbody')).toContainText('Ambulatorio');
+    await report.screenshot({ path: 'test-results/reporte-cirugia.png', fullPage: true });
+    await expect.poll(() => report.evaluate(() => window.printRequested)).toBe(true);
+    const pdf = await report.pdf({ path: 'test-results/filtros-reporte.pdf', preferCSSPageSize: true });
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(pdf.length).toBeGreaterThan(10000);
+    await report.close();
+    await page.getByRole('button', { name: 'Restablecer filtros', exact: true }).first().click();
+    await expect(search).toHaveValue('');
+    await expect(page.getByRole('button', { name: 'Hoy', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    expect(errors).toEqual([]);
+  } finally {
+    for (const id of ids) await page.request.delete(`/api/records/${id}`, { headers: { 'X-Bitacoras-Request': '1' } });
+  }
+});

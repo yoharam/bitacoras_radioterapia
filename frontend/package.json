@@ -1,0 +1,31 @@
+{
+  "name": "bitacoras-web",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port ${WEB_PORT:-3100}",
+    "build": "next build",
+    "start": "next start --hostname 127.0.0.1 --port ${WEB_PORT:-3100}"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "1.1.23",
+    "@radix-ui/react-label": "2.1.15",
+    "@radix-ui/react-slot": "1.3.3",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "cn": "^0.4.0",
+    "lucide-react": "1.47.0",
+    "next": "16.3.1",
+    "radix-ui": "^1.7.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-super-responsive-table": "6.0.2",
+    "sileo": "^0.1.5",
+    "tailwind-merge": "3.7.0",
+    "tw-animate-css": "1.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "shadcn": "4.21.4",
+    "tailwindcss": "4.3.3"
+  }
+}

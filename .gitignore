@@ -1,0 +1,17 @@
+node_modules/
+.next/
+.next-e2e*/
+.env
+.env.*
+!.env.example
+backend/data/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+backups/
+test-results/
+playwright-report/
+*.log
+.playwright-data/
+artifacts/

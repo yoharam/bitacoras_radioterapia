@@ -1,0 +1,7 @@
+{
+  "name": "bitacoras-api",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "node --watch src/server.js", "start": "node src/server.js", "test": "node --test test/*.test.js" },
+  "dependencies": { "express": "5.2.1" }
+}

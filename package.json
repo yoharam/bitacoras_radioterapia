@@ -1,0 +1,23 @@
+{
+  "name": "bitacoras-institucionales",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "node scripts/run.mjs dev",
+    "build": "node scripts/run.mjs build",
+    "start": "node scripts/run.mjs start",
+    "test": "npm test --workspace backend",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  },
+  "packageManager": "pnpm@11.22.0"
+}

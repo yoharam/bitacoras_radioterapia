@@ -1,0 +1,12 @@
+packages:
+  - frontend
+  - backend
+
+onlyBuiltDependencies:
+  - sharp
+
+overrides:
+  source-map-js: 1.2.1
+  caniuse-lite: 1.0.30001810
+  baseline-browser-mapping: 2.11.25
+  electron-to-chromium: 1.5.433
