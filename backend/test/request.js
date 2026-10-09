@@ -2,10 +2,10 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { PassThrough } from 'node:stream';
 
 // Ejercita Express y sus middlewares reales sin abrir puertos TCP.
-export function request(app, path, { method = 'GET', body, cookie, headers = {} } = {}) {
+export function request(app, path, { method = 'GET', body, cookie, headers = {}, remoteAddress = '127.0.0.1' } = {}) {
   return new Promise((resolve, reject) => {
     const socket = new PassThrough();
-    socket.remoteAddress = '127.0.0.1';
+    socket.remoteAddress = remoteAddress;
     const req = new IncomingMessage(socket);
     req.method = method;
     req.url = path;

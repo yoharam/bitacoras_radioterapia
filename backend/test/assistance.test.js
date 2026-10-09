@@ -63,7 +63,7 @@ test('sesión, CSRF, permisos separados de captura y Redes, validaciones y regis
   assert.equal((await request(app, resolvePath, { method: 'PATCH', body: { status: 'Atendida' } })).status, 401);
   assert.equal((await request(app, path, { method: 'POST', cookie, headers: { 'x-bitacoras-request': '' } })).status, 403);
   for (const [index, permissions] of [['viewer', ['radiotherapy.read']], ['requester', ['radiotherapy.read', 'radiotherapy.assist']], ['engineer', ['networks.read', 'networks.update']]]) {
-    const body = { name: index, email: `${index}@bitacoras.local`, password: credentials.password, is_admin: false, active: true, permissions };
+    const body = { name: index, username: (`${index}@bitacoras.local`).split('@')[0].toLowerCase(), email: `${index}@bitacoras.local`, password: credentials.password, is_admin: false, active: true, permissions };
     assert.equal((await request(app, '/api/users', { method: 'POST', cookie, body })).status, 201);
     const actor = await login(app, body);
     assert.equal((await request(app, path, { method: 'POST', cookie: actor })).status, index === 'requester' ? 200 : 403);
@@ -102,7 +102,7 @@ test('asigna solicitudes pendientes a personal de Redes y conserva el nombre en 
   const path = `/api/records/${record.id}/network-assistance`;
   const requested = await request(app, path, { method: 'POST', cookie });
   assert.equal(requested.status, 201);
-  const engineer = { name: 'Técnico Redes', email: 'redes@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
+  const engineer = { name: 'Técnico Redes', username: ('redes@bitacoras.local').split('@')[0].toLowerCase(), email: 'redes@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
   const createdUser = await request(app, '/api/users', { method: 'POST', cookie, body: engineer });
   assert.equal(createdUser.status, 201);
   const assigned = await request(app, `/api/network-assistance/${requested.body.request.id}`, { method: 'PATCH', cookie, body: { assigned_to: createdUser.body.user.id } });
@@ -117,7 +117,7 @@ test('asigna solicitudes pendientes a personal de Redes y conserva el nombre en 
 
 test('reconocimiento mensual acredita al inge autenticado y no duplica créditos al reintentar', async t => {
   const { app, db, cookie, record } = await fixture(t);
-  const engineer = { name: 'Ingeniera Redes Uno', email: 'inge-uno@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
+  const engineer = { name: 'Ingeniera Redes Uno', username: ('inge-uno@bitacoras.local').split('@')[0].toLowerCase(), email: 'inge-uno@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
   const createdUser = await request(app, '/api/users', { method: 'POST', cookie, body: engineer });
   assert.equal(createdUser.status, 201);
   const engineerId = createdUser.body.user.id;
@@ -141,7 +141,7 @@ test('dos ingenieros tienen contadores e historiales independientes y el dorado 
   const { app, cookie, record } = await fixture(t);
   const engineers = [];
   for (const [index, name] of ['Ingeniera Redes Uno', 'Ingeniero Redes Dos'].entries()) {
-    const body = { name, email: `contador-${index}@bitacoras.local`, password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
+    const body = { name, username: (`contador-${index}@bitacoras.local`).split('@')[0].toLowerCase(), email: `contador-${index}@bitacoras.local`, password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
     const created = await request(app, '/api/users', { method: 'POST', cookie, body });
     assert.equal(created.status, 201);
     engineers.push({ id: created.body.user.id, name, cookie: await login(app, body) });
@@ -200,7 +200,7 @@ test('atención y crédito se guardan juntos: un fallo de auditoría no consume 
 
 test('meses locales sin solapamientos, historial anterior y permisos de reconocimiento', async t => {
   const { app, db, cookie } = await fixture(t);
-  const body = { name: 'Inge Historial', email: 'historico@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
+  const body = { name: 'Inge Historial', username: ('historico@bitacoras.local').split('@')[0].toLowerCase(), email: 'historico@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
   const person = await request(app, '/api/users', { method: 'POST', cookie, body });
   const engineerId = person.body.user.id;
   const engineerCookie = await login(app, body);
@@ -219,7 +219,7 @@ test('meses locales sin solapamientos, historial anterior y permisos de reconoci
   const nextMonth = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}`;
   assert.equal((await request(app, `/api/network-assistance/recognition?month=${nextMonth}`, { cookie: engineerCookie })).body.personal.completed, 1);
   assert.equal((await request(app, '/api/network-assistance/recognition')).status, 401);
-  const viewer = { name: 'Consulta pacientes', email: 'solo-consulta@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['radiotherapy.read'] };
+  const viewer = { name: 'Consulta pacientes', username: ('solo-consulta@bitacoras.local').split('@')[0].toLowerCase(), email: 'solo-consulta@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['radiotherapy.read'] };
   await request(app, '/api/users', { method: 'POST', cookie, body: viewer });
   assert.equal((await request(app, '/api/network-assistance/recognition', { cookie: await login(app, viewer) })).status, 403);
   for (const filter of ['month=2026-13', 'month=2026-00', 'month=1899-12', 'month=2101-01', 'month=2026-10&month=2026-11', 'engineer=-1', 'engineer=2&engineer=3', 'page=0', 'limit=101']) assert.equal((await request(app, `/api/network-assistance/recognition?${filter}`, { cookie: engineerCookie })).status, 400);
@@ -227,7 +227,7 @@ test('meses locales sin solapamientos, historial anterior y permisos de reconoci
 
 test('una cuenta nueva no hereda créditos aunque SQLite reutilice el id de un ingeniero eliminado', async t => {
   const { app, db, cookie, record } = await fixture(t);
-  const body = { name: 'Inge anterior', email: 'anterior@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
+  const body = { name: 'Inge anterior', username: ('anterior@bitacoras.local').split('@')[0].toLowerCase(), email: 'anterior@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['networks.read', 'networks.update'] };
   const original = await request(app, '/api/users', { method: 'POST', cookie, body });
   const oldId = original.body.user.id;
   const originalCookie = await login(app, body);

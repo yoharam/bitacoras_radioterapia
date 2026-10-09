@@ -22,7 +22,7 @@ export default function PredictiveSearch({ id, label, value, onChange, endpoint,
     const timer = setTimeout(async () => {
       try {
         const data = await api(`${endpoint}${endpoint.includes('?') ? '&' : '?'}${new URLSearchParams({ q: value.trim() })}`, { signal: controller.signal });
-        if (!controller.signal.aborted) setItems(kind === 'users' ? data.users.map(user => ({ key: user.id, label: user.name, value: user.email, detail: user.email })) : data.suggestions.map(item => ({ key: item.name, label: item.name, value: item.name, detail: `${item.count} ${item.count === 1 ? 'atención en este período' : 'atenciones en este período'}` })));
+        if (!controller.signal.aborted) setItems(kind === 'users' ? data.users.map(user => ({ key: user.id, label: user.name, value: user.email || user.username, detail: `${user.username} · ${user.email || 'Sin correo registrado'}` })) : data.suggestions.map(item => ({ key: item.name, label: item.name, value: item.name, detail: `${item.count} ${item.count === 1 ? 'atención en este período' : 'atenciones en este período'}` })));
       } catch (e) { if (!controller.signal.aborted) setError('No se pudieron cargar las sugerencias. Puedes continuar escribiendo para buscar.'); }
       finally { if (!controller.signal.aborted) setBusy(false); }
     }, 250);

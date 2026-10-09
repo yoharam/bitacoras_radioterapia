@@ -168,7 +168,7 @@ No tienes que abrir dos terminales ni arrancar Next.js y Express por separado. P
 
 Si dejaste los valores de ejemplo:
 
-- Correo: `admin@bitacoras.local`
+- Usuario: `admin` o correo: `admin@bitacoras.local`
 - Contraseña: `Bitacoras2026!`
 
 Puedes personalizarlos en `.env` antes del primer inicio. La base inicial no contiene pacientes ni usuarios de prueba; solo se crea el administrador.
@@ -180,7 +180,7 @@ La aplicación escucha en esta computadora (`127.0.0.1`). Usa HTTP local, sin do
 1. Inicia sesión y abre **Pacientes**.
 2. Selecciona el período: Hoy, Ayer, Esta semana, Semana pasada, Este mes o Todo el historial. También puedes elegir **Día específico** o **Rango de fechas**. El sistema muestra el día de la semana y la fecha, por ejemplo: “jueves, 8 de octubre de 2026”.
 3. Presiona **Registrar paciente**.
-4. Captura nombre completo, día y fecha de atención y hora programada de tratamiento. La hora de llegada se registra después. Puedes añadir el **RFC** con homoclave y el **tipo de cirugía**: Hospitalizado o Ambulatorio; ambos son opcionales. El RFC se guarda en mayúsculas. El **tipo de derechohabiencia** es opcional y se selecciona de un catálogo de 24 claves: escribe el código o parte del nombre, sin distinguir acentos o mayúsculas, y elige una sugerencia con el ratón o con ↑, ↓ y Enter. La clave y el nombre aparecen en su columna y en la ficha del paciente.
+4. Captura nombre completo, día y fecha de atención y hora programada de tratamiento. La hora de llegada se registra después. Puedes añadir el **RFC**, con o sin homoclave, y el **tipo de cirugía**: Hospitalizado o Ambulatorio; ambos son opcionales. El RFC puede quedar vacío o tener hasta 13 caracteres (letras y números); no exige 12 ni 13 caracteres y se guarda en mayúsculas. El **tipo de derechohabiencia** es opcional y se selecciona de un catálogo de 24 claves: escribe el código o parte del nombre, sin distinguir acentos o mayúsculas, y elige una sugerencia con el ratón o con ↑, ↓ y Enter. La clave y el nombre aparecen en su columna y en la ficha del paciente.
 5. Cuando llegue, pulsa **Registrar llegada** en su fila. El sistema guarda la hora local; después habilita el botón del hospital para solicitar internet a Redes.
 6. El registro comienza **En espera**. Usa la acción **Avanzar** para pasar a **En tratamiento** cuando inicie la atención y a **Atendido** al terminar. El detalle del paciente muestra las tres etapas en una línea de progreso. Editar permite corregir el estado si hace falta. Las observaciones son opcionales.
 7. Pulsa el folio, el paciente, el RFC, la fecha, los horarios o el estado para abrir su ficha. Puedes consultar, editar o eliminar el registro según tus permisos.
@@ -200,12 +200,20 @@ Cada registro corresponde a una atención. El mismo paciente puede tener registr
 
 ## 5. Usuarios y permisos modulares
 
+Puedes iniciar sesión con tu **nombre de usuario o correo electrónico**, sin distinguir mayúsculas, y tu contraseña. El nombre de usuario se consulta y cambia en **Usuarios**; también aparece en **Mi cuenta**. Para las cuentas anteriores se genera a partir de la parte del correo anterior al `@`, sin acentos ni espacios; si se repite, se añade un número. Las cuentas conservan sus contraseñas, sesiones y permisos.
+
+Al crear una cuenta puedes **buscar personal institucional por nombre o número de empleado**. Al elegir una sugerencia se completan el nombre, el número de empleado y un nombre de usuario disponible; también se muestran servicio, puesto y estado laboral cuando están autorizados. La búsqueda usa el contrato de [Contrato.md](Contrato.md) y [Documentacion.json](Documentacion.json). El servicio no publica un campo de correo: este se captura manualmente si se necesita. Si no hay coincidencias o el servicio está fuera de línea, puedes continuar con la captura manual. Una persona ya vinculada a una cuenta aparece como registrada.
+
+El nombre de usuario se sugiere también al escribir el nombre manualmente. Para una persona con nombre José y apellido González se propone `jose.gonzalez`; si está ocupado se usa `jose.gonzalez1`, después `jose.gonzalez2`, etc. Puedes modificarlo. Al guardar una sugerencia se comprueba otra vez la disponibilidad para evitar duplicados si otra persona crea una cuenta al mismo tiempo.
+
+Configura `PERSONAL_API_BASE_URL` y `PERSONAL_API_KEY` en el `.env` local para habilitar la consulta institucional. La clave se envía como Bearer únicamente desde Express; no llega al navegador. Los resultados se limitan a los campos usados por el formulario, se guardan en caché 60 segundos y los errores o límites del servicio se muestran sin impedir la captura manual.
+
 El administrador tiene acceso a todos los módulos. Desde **Usuarios** puede crear, consultar, editar y eliminar cuentas, cambiar sus contraseñas y activarlas o desactivarlas.
 
 Para crear una cuenta:
 
 1. Abre **Usuarios → Crear usuario**.
-2. Escribe nombre, correo único y contraseña inicial de al menos 12 caracteres.
+2. Escribe nombre completo, nombre de usuario único (de 3 a 50 caracteres) y contraseña inicial de al menos 12 caracteres. **El correo electrónico es opcional**; si lo capturas debe ser válido y único. El formulario lo indica expresamente.
 3. Selecciona **Permisos personalizados** o **Administrador**.
 4. Marca las acciones permitidas en cada módulo y guarda.
 
@@ -236,6 +244,14 @@ Para quien registra llegadas, asigna **Consultar** y **Registrar llegada del pac
 - Cambiar la contraseña desde Usuarios revoca las sesiones de esa cuenta.
 - Si una cuenta ya creó registros, **desactívala** para conservar la autoría del historial. Su eliminación se bloquea mientras tenga registros asociados.
 - Las cuentas sin registros pueden eliminarse con confirmación.
+
+### Auditoría y seguridad
+
+El apartado **Auditoría**, disponible para administradores, conserva por evento el nombre, nombre de usuario, correo si existe, ID de la cuenta, IP de origen, fecha y hora y acción realizada. La identidad es una copia del momento del evento: permanece aunque después se cambie o elimine la cuenta. Incluye accesos fallidos, bloqueos por intentos, cambios y denegaciones por permisos. Los intentos fallidos muestran el identificador intentado como no verificado, sin atribuirlo a una persona autenticada. Los eventos antiguos sin usuario o IP indican que no fueron registrados.
+
+Puedes buscar por persona, usuario, correo o IP, filtrar por actividad y abrir el detalle de una acción. Se actualiza cada 15 segundos mientras está visible y tiene un botón **Actualizar**. No guarda contraseñas, tokens, consultas URL ni nombres, RFC u observaciones de pacientes.
+
+Next.js obtiene la IP de la conexión y la envía firmada a Express con una clave interna compartida, generada al arrancar con el comando de la raíz. Express solo acepta esa firma vigente desde el proxy local; no confía en `X-Forwarded-For` ni `X-Real-IP` enviados por el cliente. Si instalas un proxy externo delante de Next.js, la IP registrada será la de ese proxy hasta configurar explícitamente su confianza. La clave `INTERNAL_API_PROXY_SECRET`, si se configura en `.env`, debe ser privada y compartida entre ambos procesos.
 
 ## 6. Ejecutar la versión compilada
 
@@ -299,7 +315,7 @@ Las migraciones se ejecutan automáticamente al iniciar el backend. Los registro
 | `EADDRINUSE` | Detén las instancias anteriores. En desarrollo, ejecuta el comando de la raíz y usa la URL elegida automáticamente; en modo compilado libera los puertos configurados |
 | Next.js no puede adquirir su lock | Ya hay otra instancia del frontend en esta carpeta. Detén esa instancia antes de volver a arrancar |
 | No conecta con la API | Revisa la salida de la terminal. Ejecuta `npm run dev` desde la raíz y comprueba que ambos servicios estén activos |
-| El correo o la contraseña son incorrectos | Verifica las credenciales y que la cuenta esté activa. Editar `ADMIN_PASSWORD` en `.env` no cambia una cuenta existente |
+| El usuario, correo o contraseña son incorrectos | Verifica las credenciales y que la cuenta esté activa. Editar `ADMIN_PASSWORD` en `.env` no cambia una cuenta existente |
 | No aparece un módulo o una acción | El administrador debe asignar los permisos correspondientes desde Usuarios |
 | No se puede eliminar un usuario | Si tiene registros, desactívalo. Tu propia cuenta y el último administrador están protegidos |
 | `next start` no encuentra compilación | Ejecuta primero `npm run build` |
