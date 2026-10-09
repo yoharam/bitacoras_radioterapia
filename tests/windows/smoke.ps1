@@ -38,6 +38,12 @@ try {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action DisableAutostart
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo desactivar el inicio automatico.' }
     Write-Host 'OK: instalacion, API, administrador, arranque repetido, respaldo y acceso directo de inicio automatico.'
+} catch {
+    foreach ($log in @('application.log', 'error.log')) {
+        $file = Join-Path $root ('.windows\' + $log)
+        if (Test-Path -LiteralPath $file) { Write-Host "Registro de prueba: $log"; Get-Content -LiteralPath $file -Tail 40 | Out-Host }
+    }
+    throw
 } finally {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action Stop
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo detener la aplicacion Windows.' }

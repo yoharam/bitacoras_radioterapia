@@ -17,6 +17,7 @@ $script:StateFile = Join-Path $script:StateDirectory 'process.json'
 $script:ConfigHelper = Join-Path $PSScriptRoot 'config.mjs'
 $script:Runner = Join-Path $script:Root 'scripts\run.mjs'
 $script:Node = $null
+$script:HealthFailure = 'Los servicios todavia no responden.'
 
 function Invoke-Checked {
     param([string]$File, [string[]]$Arguments)
@@ -132,8 +133,9 @@ function Test-Healthy {
         $direct = Invoke-RestMethod -Uri "http://127.0.0.1:$($Settings.apiPort)/api/health" -TimeoutSec 2
         $proxied = Invoke-RestMethod -Uri "$($Settings.url)/api/health" -TimeoutSec 2
         $page = Invoke-WebRequest -Uri $Settings.url -UseBasicParsing -TimeoutSec 2
+        $script:HealthFailure = 'La pagina o la API no devolvieron el estado esperado.'
         return ($direct.status -eq 'ok' -and $proxied.status -eq 'ok' -and $page.StatusCode -eq 200)
-    } catch { return $false }
+    } catch { $script:HealthFailure = $_.Exception.Message; return $false }
 }
 
 function Stop-Application {
@@ -175,7 +177,7 @@ function Start-Application {
         if (-not (Get-OwnedProcess)) { throw 'No pudieron iniciar los servicios. Revisa .windows/error.log.' }
         if ([DateTime]::UtcNow -ge $deadline) {
             Stop-Application
-            throw 'La aplicacion no respondio a tiempo. Revisa .windows/application.log y .windows/error.log.'
+            throw ('La aplicacion no respondio a tiempo: ' + $script:HealthFailure + ' Revisa .windows/application.log y .windows/error.log.')
         }
         Start-Sleep -Seconds 1
     }
