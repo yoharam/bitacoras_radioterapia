@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
+import { get } from 'node:http';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -37,6 +38,30 @@ export function initialEnvironment({ name, email, password }) {
   return `ADMIN_NAME=${quote(name.trim())}\nADMIN_EMAIL=${quote(email.trim().toLowerCase())}\nADMIN_PASSWORD=${quote(password)}\nWEB_PORT=3100\nAPI_PORT=4100\nAPP_ORIGIN=http://localhost:3100\nCOOKIE_SECURE=false\n`;
 }
 
+export async function verifyHealth({ apiPort, webPort }) {
+  const request = (url, json) => new Promise((resolveRequest, reject) => {
+    const req = get(url, { signal: AbortSignal.timeout(2000) }, response => {
+      response.on('error', reject);
+      if (response.statusCode !== 200) { response.resume(); reject(new Error(`${url}: HTTP ${response.statusCode}`)); return; }
+      if (!json) { response.resume(); resolveRequest(); return; }
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { body += chunk; });
+      response.on('end', () => {
+        try {
+          if (JSON.parse(body).status !== 'ok') throw new Error('estado inesperado');
+          resolveRequest();
+        } catch { reject(new Error(`${url}: respuesta de API inesperada`)); }
+      });
+    });
+    req.on('error', error => reject(new Error(`${url}: ${error.message}`)));
+  });
+  // Services bind IPv4. Direct HTTP avoids localhost IPv6 fallback and system proxies.
+  await request(`http://127.0.0.1:${apiPort}/api/health`, true);
+  await request(`http://127.0.0.1:${webPort}/api/health`, true);
+  await request(`http://127.0.0.1:${webPort}/`, false);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     if (process.argv[2] === 'init') {
@@ -44,10 +69,14 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       writeFileSync(resolve(projectRoot, '.env'), initialEnvironment(JSON.parse(readFileSync(0, 'utf8').replace(/^\uFEFF/, ''))), { flag: 'wx', mode: 0o600 });
     } else {
       if (existsSync(resolve(projectRoot, '.env'))) loadEnvFile(resolve(projectRoot, '.env'));
-      console.log(JSON.stringify(settings(process.env)));
+      const configuration = settings(process.env);
+      if (process.argv[2] === 'health') await verifyHealth(configuration);
+      else console.log(JSON.stringify(configuration));
     }
   } catch (error) {
-    console.error(error.code === 'EEXIST' ? 'La configuracion existente se conserva.' : error.message);
+    const message = error.code === 'EEXIST' ? 'La configuracion existente se conserva.' : error.message;
+    if (process.argv[2] === 'health') console.log(message);
+    else console.error(message);
     process.exitCode = 1;
   }
 }

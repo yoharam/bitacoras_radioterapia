@@ -130,11 +130,10 @@ function Assert-FreePorts {
 function Test-Healthy {
     param($Settings)
     try {
-        $direct = Invoke-RestMethod -Uri "http://127.0.0.1:$($Settings.apiPort)/api/health" -TimeoutSec 2
-        $proxied = Invoke-RestMethod -Uri "$($Settings.url)/api/health" -TimeoutSec 2
-        $page = Invoke-WebRequest -Uri $Settings.url -UseBasicParsing -TimeoutSec 2
-        $script:HealthFailure = 'La pagina o la API no devolvieron el estado esperado.'
-        return ($direct.status -eq 'ok' -and $proxied.status -eq 'ok' -and $page.StatusCode -eq 200)
+        $message = & $script:Node $script:ConfigHelper health
+        if ($LASTEXITCODE -eq 0) { return $true }
+        $script:HealthFailure = $message -join ' '
+        return $false
     } catch { $script:HealthFailure = $_.Exception.Message; return $false }
 }
 

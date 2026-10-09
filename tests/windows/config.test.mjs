@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseEnv } from 'node:util';
-import { settings, initialEnvironment } from '../../scripts/windows/config.mjs';
+import { createServer } from 'node:http';
+import { settings, initialEnvironment, verifyHealth } from '../../scripts/windows/config.mjs';
 
 test('local configuration respects custom ports, database and build directory without exposing secrets', () => {
   const result = settings({ WEB_PORT: '3200', API_PORT: '4200', APP_ORIGIN: 'http://127.0.0.1:3200/', DB_PATH: 'private/hospital.sqlite', NEXT_DIST_DIR: '.next-local', ADMIN_PASSWORD: 'secret' }, '/tmp/project');
@@ -47,4 +48,29 @@ test('configuration is created once via stdin and a repeat install preserves its
     assert.equal(readFileSync(join(directory, '.env'), 'utf8'), before);
     assert.equal((first.stdout + first.stderr + second.stdout + second.stderr).includes('Secure password12'), false);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('readiness requires the API, its frontend proxy and the page to respond over IPv4', async () => {
+  let proxyStatus = 200;
+  let pageStatus = 200;
+  const api = createServer((_req, res) => res.end(JSON.stringify({ status: 'ok' })));
+  const web = createServer((req, res) => {
+    res.statusCode = req.url === '/api/health' ? proxyStatus : pageStatus;
+    res.end(req.url === '/api/health' ? JSON.stringify({ status: 'ok' }) : '<html>Bitacoras</html>');
+  });
+  await Promise.all([api, web].map(server => new Promise(resolveServer => server.listen(0, '127.0.0.1', resolveServer))));
+  try {
+    const configuration = { apiPort: api.address().port, webPort: web.address().port };
+    await verifyHealth(configuration);
+    proxyStatus = 502;
+    await assert.rejects(verifyHealth(configuration), /HTTP 502/);
+    proxyStatus = 200;
+    pageStatus = 500;
+    await assert.rejects(verifyHealth(configuration), /HTTP 500/);
+    pageStatus = 200;
+    await new Promise(resolveServer => api.close(resolveServer));
+    await assert.rejects(verifyHealth(configuration), /127\.0\.0\.1/);
+  } finally {
+    await Promise.all([api, web].map(server => new Promise(resolveServer => server.close(resolveServer))));
+  }
 });

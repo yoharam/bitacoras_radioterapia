@@ -26,7 +26,7 @@ try {
     if ($firstProcess.id -ne $secondProcess.id) { throw 'El segundo arranque duplico la instancia.' }
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
     $body = @{ email = 'windows-test@bitacoras.local'; password = $password } | ConvertTo-Json
-    $login = Invoke-RestMethod -Uri "$($settings.url)/api/auth/login" -Method Post -ContentType 'application/json' -Body $body -WebSession $session -Headers @{ 'X-Bitacoras-Request' = '1'; Origin = $settings.url }
+    $login = Invoke-RestMethod -Uri "http://127.0.0.1:$($settings.webPort)/api/auth/login" -Method Post -ContentType 'application/json' -Body $body -WebSession $session -Headers @{ 'X-Bitacoras-Request' = '1'; Origin = $settings.url }
     if (-not $login.user.is_admin) { throw 'No se creo el administrador inicial.' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action Backup
     if ($LASTEXITCODE -ne 0) { throw 'Fallo el respaldo Windows.' }
