@@ -14,11 +14,13 @@ test('períodos locales: semanas de lunes a domingo y cambios de mes y año', ()
 });
 
 test('reporte imprimible escapa texto de pacientes y filtros y repite encabezados', () => {
-  const html = reportHtml([{ id: 1, date: '2026-10-08', patient_name: '<script>alert(1)</script>', status: 'Pendiente', observations: 'A & B' }], { selection: periodSelection('all'), query: '<img src=x>', status: '' });
+  const html = reportHtml([{ id: 1, date: '2026-10-08', patient_name: '<script>alert(1)</script>', entitlement_type: '95', status: 'Pendiente', observations: 'A & B' }], { selection: periodSelection('all'), query: '<img src=x>', status: '' });
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   assert.ok(html.includes('&lt;img src=x&gt;'));
   assert.ok(html.includes('A &amp; B'));
   assert.ok(!html.includes('<script>'));
   assert.ok(html.includes('display:table-header-group'));
   assert.ok(html.includes('A4 landscape'));
+  assert.ok(html.includes('Tipo de derechohabiencia'));
+  assert.ok(html.includes('95 · IMSS BIENESTAR Hombre'));
 });

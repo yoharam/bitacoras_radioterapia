@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { modules, permissionKeys, can, validatePermissions } from './permissions.js';
+import { ENTITLEMENT_TYPES } from '../../shared/entitlement-types.mjs';
 
 const derive = promisify(scrypt);
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -13,6 +14,7 @@ const statuses = ['Pendiente', 'En proceso', 'Completada'];
 const priorities = ['Normal', 'Alta', 'Urgente'];
 const surgeryTypes = ['Hospitalizado', 'Ambulatorio'];
 const sessionDuration = 8 * 60 * 60 * 1000;
+const idleSessionDuration = 5 * 60 * 1000;
 
 export async function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
@@ -49,7 +51,9 @@ function validateRecord(body, existing = {}) {
   if (rfc && !/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)) throw Object.assign(new Error('Escribe un RFC válido de 12 o 13 caracteres, con homoclave.'), { status: 400 });
   const surgery_type = body.surgery_type === undefined ? existing.surgery_type ?? '' : body.surgery_type;
   if (surgery_type !== '' && !surgeryTypes.includes(surgery_type)) throw Object.assign(new Error('Selecciona Hospitalizado o Ambulatorio como tipo de cirugía.'), { status: 400 });
-  return { ...record, date: body.date, status, rfc, surgery_type };
+  const rawEntitlement = body.entitlement_type === undefined ? existing.entitlement_type ?? '' : body.entitlement_type;
+  if (typeof rawEntitlement !== 'string' || (rawEntitlement !== '' && !ENTITLEMENT_TYPES.some(type => type.code === rawEntitlement))) throw Object.assign(new Error('Selecciona un tipo de derechohabiencia del catálogo por código o nombre.'), { status: 400 });
+  return { ...record, date: body.date, status, rfc, surgery_type, entitlement_type: rawEntitlement || null };
 }
 
 export async function createApp({ databasePath, adminEmail = process.env.ADMIN_EMAIL || 'admin@bitacoras.local', adminPassword = process.env.ADMIN_PASSWORD, adminName = process.env.ADMIN_NAME || 'Administrador', origin = process.env.APP_ORIGIN || 'http://localhost:3100', secureCookies = process.env.COOKIE_SECURE === 'true' } = {}) {
@@ -63,7 +67,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS user_permissions (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, permission TEXT NOT NULL, PRIMARY KEY(user_id, permission));
-    CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL, idle_expires_at INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL, date TEXT NOT NULL, area TEXT NOT NULL, responsible TEXT NOT NULL,
@@ -83,15 +87,35 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
       handled_by INTEGER REFERENCES users(id) ON DELETE SET NULL, handled_at TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS network_assistance_pending_idx ON network_assistance(record_id) WHERE status = 'Solicitada';
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      actor_name TEXT NOT NULL,
+      action TEXT NOT NULL,
+      entity TEXT NOT NULL,
+      entity_id TEXT,
+      details TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS audit_events_created_idx ON audit_events(created_at DESC, id DESC);
   `);
   // Migración aditiva: conserva íntegros los registros anteriores y sus sesiones.
   const existingColumns = new Set(db.prepare('PRAGMA table_info(records)').all().map(column => column.name));
   db.exec('BEGIN');
   try {
-    for (const column of ['patient_name', 'arrival_time', 'treatment_time', 'rfc', 'surgery_type', 'arrived_at']) {
+    db.exec('CREATE TABLE IF NOT EXISTS entitlement_types (code TEXT PRIMARY KEY, name TEXT NOT NULL)');
+    const saveEntitlement = db.prepare('INSERT INTO entitlement_types (code, name) VALUES (?, ?) ON CONFLICT(code) DO UPDATE SET name = excluded.name');
+    for (const type of ENTITLEMENT_TYPES) saveEntitlement.run(type.code, type.name);
+    if (!existingColumns.has('entitlement_type')) db.exec('ALTER TABLE records ADD COLUMN entitlement_type TEXT REFERENCES entitlement_types(code)');
+    for (const column of ['patient_name', 'arrival_time', 'treatment_time', 'rfc', 'surgery_type', 'arrived_at', 'treatment_started_at', 'treatment_completed_at']) {
       if (!existingColumns.has(column)) db.exec(`ALTER TABLE records ADD COLUMN ${column} TEXT`);
     }
     if (!existingColumns.has('arrived_at')) db.exec("UPDATE records SET arrived_at = updated_at WHERE arrival_time IS NOT NULL AND arrival_time != ''");
+    const sessionColumns = new Set(db.prepare('PRAGMA table_info(sessions)').all().map(column => column.name));
+    if (!sessionColumns.has('idle_expires_at')) db.exec('ALTER TABLE sessions ADD COLUMN idle_expires_at INTEGER NOT NULL DEFAULT 0');
+    db.exec('UPDATE sessions SET idle_expires_at = expires_at WHERE idle_expires_at = 0');
+    const assistanceColumns = new Set(db.prepare('PRAGMA table_info(network_assistance)').all().map(column => column.name));
+    if (!assistanceColumns.has('assigned_to')) db.exec('ALTER TABLE network_assistance ADD COLUMN assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL');
     const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(column => column.name));
     if (!userColumns.has('is_admin')) {
       db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
@@ -119,14 +143,21 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     next();
   });
   app.use(express.json({ limit: '32kb' }));
+  function writeAudit(actor, action, entity, entityId = null, details = {}) {
+    db.prepare('INSERT INTO audit_events (actor_id, actor_name, action, entity, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(actor?.id ?? null, actor?.name ?? 'Anónimo', action, entity, entityId == null ? null : String(entityId), JSON.stringify(details), new Date().toISOString());
+  }
   function auth(req, res, next) {
     const cookie = (req.headers.cookie || '').split(';').map(item => item.trim()).find(item => item.startsWith('bitacoras_session='));
     const token = cookie?.slice('bitacoras_session='.length);
     if (!token || !/^[a-f0-9]{64}$/.test(token)) return res.status(401).json({ message: 'Inicia sesión para continuar.' });
-    const session = db.prepare('SELECT users.id, users.name, users.email, users.is_admin, users.active FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ? AND users.active = 1').get(digest(token), Date.now());
-    if (!session) return res.status(401).json({ message: 'Tu sesión terminó. Vuelve a iniciar sesión.' });
+    const now = Date.now();
+    const tokenHash = digest(token);
+    const session = db.prepare('SELECT users.id, users.name, users.email, users.is_admin, users.active FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ? AND idle_expires_at > ? AND users.active = 1').get(tokenHash, now, now);
+    if (!session) return res.status(401).json({ message: 'Tu sesión terminó por inactividad o vencimiento. Vuelve a iniciar sesión.' });
+    db.prepare('UPDATE sessions SET idle_expires_at = ? WHERE token_hash = ?').run(now + idleSessionDuration, tokenHash);
     req.user = publicUser(session);
-    req.sessionHash = digest(token);
+    req.sessionHash = tokenHash;
     next();
   }
   function publicUser(user) {
@@ -145,19 +176,22 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     for (const [key, value] of attempts) if (value.expires <= now) attempts.delete(key);
     const key = req.ip;
     const count = attempts.get(key) || { failures: 0, expires: now + 15 * 60 * 1000 };
-    if (count.failures >= 5) return res.status(429).json({ message: 'Demasiados intentos. Inténtalo de nuevo en 15 minutos.' });
+    if (count.failures >= 5) { writeAudit(null, 'auth.login_blocked', 'auth', null, { reason: 'rate_limited' }); return res.status(429).json({ message: 'Demasiados intentos. Inténtalo de nuevo en 15 minutos.' }); }
     const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
     const valid = await verifyPassword(password, user?.password_hash || dummyHash);
-    if (!user || !valid || !user.active) { count.failures++; attempts.set(key, count); return res.status(401).json({ message: 'El correo o la contraseña son incorrectos.' }); }
+    if (!user || !valid || !user.active) { count.failures++; attempts.set(key, count); writeAudit(null, 'auth.login_failed', 'auth', null, { reason: 'invalid_credentials' }); return res.status(401).json({ message: 'El correo o la contraseña son incorrectos.' }); }
     attempts.delete(key);
-    db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now);
+    db.prepare('DELETE FROM sessions WHERE expires_at <= ? OR idle_expires_at <= ?').run(now, now);
     const token = randomBytes(32).toString('hex');
-    db.prepare('INSERT INTO sessions VALUES (?, ?, ?)').run(digest(token), user.id, now + sessionDuration);
+    db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, idle_expires_at) VALUES (?, ?, ?, ?)').run(digest(token), user.id, now + sessionDuration, now + idleSessionDuration);
+    writeAudit(user, 'auth.login_succeeded', 'auth');
     res.cookie('bitacoras_session', token, { ...cookieOptions, maxAge: sessionDuration });
     res.json({ user: publicUser(user) });
   });
   app.get('/api/auth/me', auth, (req, res) => res.json({ user: req.user }));
+  app.post('/api/auth/activity', auth, (_req, res) => res.status(204).end());
   app.post('/api/auth/logout', auth, (req, res) => {
+    writeAudit(req.user, 'auth.logout', 'auth');
     db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.sessionHash);
     res.clearCookie('bitacoras_session', cookieOptions).json({ message: 'Sesión cerrada.' });
   });
@@ -173,12 +207,21 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
       db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(req.user.id, req.sessionHash);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
+    writeAudit(req.user, 'auth.password_changed', 'user', req.user.id);
     res.json({ message: 'Contraseña actualizada.' });
+  });
+  app.get('/api/audit', auth, (req, res) => {
+    if (!req.user.is_admin) return res.status(403).json({ message: 'La auditoría está disponible solo para administradores.' });
+    const { page = '1', limit = '20' } = req.query;
+    if ([page, limit].some(value => typeof value !== 'string') || !/^[0-9]+$/.test(page) || !/^[0-9]+$/.test(limit) || Number(page) < 1 || Number(page) > 100000 || Number(limit) < 1 || Number(limit) > 100) return res.status(400).json({ message: 'Revisa la página y el límite de auditoría.' });
+    const total = db.prepare('SELECT COUNT(*) AS total FROM audit_events').get().total;
+    const events = db.prepare('SELECT id, actor_id, actor_name, action, entity, entity_id, details, created_at FROM audit_events ORDER BY id DESC LIMIT ? OFFSET ?').all(Number(limit), (Number(page) - 1) * Number(limit)).map(event => ({ ...event, details: JSON.parse(event.details) }));
+    res.json({ events, total, page: Number(page), pages: Math.max(1, Math.ceil(total / Number(limit))) });
   });
   app.get('/api/permissions', auth, (_req, res) => res.json({ modules }));
   app.use('/api/users', auth);
   const findUser = (req, res, next) => {
-    if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).json({ message: 'El usuario no es válido.' });
+    if (!/^[1-9][0-9]*$/.test(req.params.id)) return res.status(400).json({ message: 'El usuario no es válido.' });
     req.targetUser = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(req.params.id));
     if (!req.targetUser) return res.status(404).json({ message: 'No se encontró el usuario.' });
     next();
@@ -227,6 +270,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
       const id = Number(result.lastInsertRowid);
       savePermissions(id, values.is_admin ? [] : values.permissions);
       db.exec('COMMIT');
+      writeAudit(req.user, 'user.created', 'user', id);
       res.status(201).json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)) });
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   });
@@ -241,6 +285,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
       savePermissions(req.targetUser.id, values.is_admin ? [] : values.permissions);
       if (!values.active || values.password) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.targetUser.id);
       db.exec('COMMIT');
+      writeAudit(req.user, 'user.updated', 'user', req.targetUser.id);
       res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.targetUser.id)) });
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   });
@@ -249,6 +294,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     protectAccount(req.user, req.targetUser, { active: false, is_admin: false, permissions: [] });
     if (db.prepare('SELECT id FROM records WHERE created_by = ? LIMIT 1').get(req.targetUser.id)) return res.status(409).json({ message: 'Este usuario tiene registros de radioterapia. Desactívalo para conservar su historial.' });
     db.prepare('DELETE FROM users WHERE id = ?').run(req.targetUser.id);
+    writeAudit(req.user, 'user.deleted', 'user', req.targetUser.id);
     res.json({ message: 'Usuario eliminado.' });
   });
   app.use('/api/records', auth);
@@ -268,7 +314,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     res.json({ records: rows, total, page: Number(page), pages: Math.max(1, Math.ceil(total / Number(limit))), stats });
   });
   const findRecord = (req, res, next) => {
-    if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).json({ message: 'El folio no es válido.' });
+    if (!/^[1-9][0-9]*$/.test(req.params.id)) return res.status(400).json({ message: 'El folio no es válido.' });
     req.record = db.prepare("SELECT records.*, users.name AS author, (SELECT requested_at FROM network_assistance WHERE record_id = records.id AND status = 'Solicitada') AS assistance_requested_at FROM records JOIN users ON users.id = records.created_by WHERE records.id = ?").get(Number(req.params.id));
     if (!req.record) return res.status(404).json({ message: 'No se encontró la bitácora.' });
     next();
@@ -281,6 +327,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     if (req.record.arrived_at) return res.json({ record: req.record, message: 'La llegada del paciente ya estaba registrada.' });
     const arrivedAt = new Date().toISOString();
     db.prepare('UPDATE records SET arrival_time = ?, arrived_at = ?, updated_at = ? WHERE id = ? AND arrived_at IS NULL').run(arrivalTime, arrivedAt, arrivedAt, req.record.id);
+    writeAudit(req.user, 'record.arrival_recorded', 'record', req.record.id);
     const updated = db.prepare('SELECT records.*, users.name AS author, (SELECT requested_at FROM network_assistance WHERE record_id = records.id AND status = \'Solicitada\') AS assistance_requested_at FROM records JOIN users ON users.id = records.created_by WHERE records.id = ?').get(req.record.id);
     res.json({ record: updated, message: 'Llegada registrada. Ya puedes solicitar internet.' });
   });
@@ -290,39 +337,95 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     const existing = db.prepare("SELECT * FROM network_assistance WHERE record_id = ? AND status = 'Solicitada'").get(req.record.id);
     if (existing) return res.json({ request: existing, message: 'La asistencia ya está solicitada. Tu ingeniero va en camino.' });
     const result = db.prepare('INSERT INTO network_assistance (record_id, requested_by, requester_name, requested_at) VALUES (?, ?, ?, ?)').run(req.record.id, req.user.id, req.user.name, new Date().toISOString());
-    res.status(201).json({ request: db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(Number(result.lastInsertRowid)), message: 'Tu ingeniero va en camino' });
+    const requestId = Number(result.lastInsertRowid);
+    writeAudit(req.user, 'network.requested', 'network_assistance', requestId);
+    res.status(201).json({ request: db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(requestId), message: 'Tu ingeniero va en camino' });
   });
   app.post('/api/records', requirePermission('radiotherapy.create'), (req, res) => {
     const record = validateRecord(req.body || {}), now = new Date().toISOString();
-    const result = db.prepare('INSERT INTO records (title, date, area, responsible, description, observations, status, priority, created_by, created_at, updated_at, patient_name, arrival_time, treatment_time, rfc, surgery_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(record.patient_name, record.date, 'Radioterapia', req.user.name, '', record.observations, record.status, 'Normal', req.user.id, now, now, record.patient_name, record.arrival_time, record.treatment_time, record.rfc, record.surgery_type);
-    res.status(201).json({ record: db.prepare('SELECT * FROM records WHERE id = ?').get(Number(result.lastInsertRowid)) });
+    const result = db.prepare('INSERT INTO records (title, date, area, responsible, description, observations, status, priority, created_by, created_at, updated_at, patient_name, arrival_time, treatment_time, rfc, surgery_type, entitlement_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(record.patient_name, record.date, 'Radioterapia', req.user.name, '', record.observations, record.status, 'Normal', req.user.id, now, now, record.patient_name, record.arrival_time, record.treatment_time, record.rfc, record.surgery_type, record.entitlement_type);
+    const id = Number(result.lastInsertRowid);
+    writeAudit(req.user, 'record.created', 'record', id);
+    res.status(201).json({ record: db.prepare('SELECT * FROM records WHERE id = ?').get(id) });
   });
   app.put('/api/records/:id', requirePermission('radiotherapy.update'), findRecord, (req, res) => {
-    const record = validateRecord(req.body || {}, req.record);
-    db.prepare('UPDATE records SET patient_name = ?, date = ?, arrival_time = ?, treatment_time = ?, observations = ?, status = ?, rfc = ?, surgery_type = ?, updated_at = ? WHERE id = ?').run(record.patient_name, record.date, record.arrival_time, record.treatment_time, record.observations, record.status, record.rfc, record.surgery_type, new Date().toISOString(), req.record.id);
+    const record = validateRecord(req.body || {}, req.record), now = new Date().toISOString();
+    let treatmentStartedAt = req.record.treatment_started_at, treatmentCompletedAt = req.record.treatment_completed_at;
+    if (record.status === 'Pendiente' && req.record.status !== 'Pendiente') { treatmentStartedAt = null; treatmentCompletedAt = null; }
+    else if (record.status === 'En proceso' && req.record.status !== 'En proceso') { treatmentStartedAt = now; treatmentCompletedAt = null; }
+    else if (record.status === 'Completada' && req.record.status !== 'Completada') treatmentCompletedAt = now;
+    db.prepare('UPDATE records SET patient_name = ?, date = ?, arrival_time = ?, treatment_time = ?, observations = ?, status = ?, rfc = ?, surgery_type = ?, entitlement_type = ?, treatment_started_at = ?, treatment_completed_at = ?, updated_at = ? WHERE id = ?').run(record.patient_name, record.date, record.arrival_time, record.treatment_time, record.observations, record.status, record.rfc, record.surgery_type, record.entitlement_type, treatmentStartedAt, treatmentCompletedAt, now, req.record.id);
+    writeAudit(req.user, 'record.updated', 'record', req.record.id);
+    if (record.status !== req.record.status) writeAudit(req.user, 'record.status_changed', 'record', req.record.id);
     res.json({ record: db.prepare('SELECT * FROM records WHERE id = ?').get(req.record.id) });
   });
   app.delete('/api/records/:id', requirePermission('radiotherapy.delete'), findRecord, (req, res) => {
     db.prepare('DELETE FROM records WHERE id = ?').run(req.record.id);
+    writeAudit(req.user, 'record.deleted', 'record', req.record.id);
     res.json({ message: 'Bitácora eliminada.' });
   });
+  function recognitionPeriod(month) {
+    const now = new Date();
+    month ??= `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    if (typeof month !== 'string' || !/^\d{4}-\d{2}$/.test(month) || !validDate(`${month}-01`)) throw Object.assign(new Error('Selecciona un mes válido para el reconocimiento.'), { status: 400 });
+    const [year, monthNumber] = month.split('-').map(Number);
+    return { month, start: new Date(year, monthNumber - 1, 1).toISOString(), end: new Date(year, monthNumber, 1).toISOString() };
+  }
+  function recognitionFor(engineerId, period = recognitionPeriod()) {
+    if (engineerId == null) return null;
+    const person = db.prepare('SELECT name FROM users WHERE id = ?').get(engineerId);
+    const completed = db.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'network.completed' AND actor_id = ? AND COALESCE(json_extract(details, '$.handled_at'), created_at) >= ? AND COALESCE(json_extract(details, '$.handled_at'), created_at) < ?").get(engineerId, period.start, period.end).count;
+    return { engineer_id: engineerId, engineer_name: person?.name || 'Redes', month: period.month, completed, gold: completed > 10 };
+  }
   app.use('/api/network-assistance', auth);
+  app.get('/api/network-assistance/recognition', requirePermission('networks.read'), (req, res) => {
+    const { month, engineer = '', page = '1', limit = '8' } = req.query;
+    const period = recognitionPeriod(month);
+    if ([engineer, page, limit].some(value => typeof value !== 'string') || (engineer !== '' && (!/^[1-9][0-9]*$/.test(engineer) || !Number.isSafeInteger(Number(engineer)))) || !/^\d+$/.test(page) || Number(page) < 1 || Number(page) > 100000 || !/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100) return res.status(400).json({ message: 'Revisa los filtros de reconocimiento.' });
+    const people = db.prepare("SELECT users.id, users.active FROM users WHERE EXISTS (SELECT 1 FROM user_permissions WHERE user_id = users.id AND permission = 'networks.update') ORDER BY users.name, users.id").all();
+    const engineers = people.map(person => ({ ...recognitionFor(person.id, period), active: Boolean(person.active) }));
+    const clauses = ["action = 'network.completed'", "COALESCE(json_extract(details, '$.handled_at'), created_at) >= ?", "COALESCE(json_extract(details, '$.handled_at'), created_at) < ?"];
+    const params = [period.start, period.end];
+    if (engineer) { clauses.push("actor_id = ?"); params.push(Number(engineer)); }
+    const where = clauses.join(' AND ');
+    const total = db.prepare(`SELECT COUNT(*) AS total FROM audit_events WHERE ${where}`).get(...params).total;
+    const history = db.prepare(`SELECT id, entity_id AS assistance_id, actor_id AS engineer_id, actor_name AS engineer_name, COALESCE(json_extract(details, '$.record_id'), (SELECT record_id FROM network_assistance WHERE id = CAST(audit_events.entity_id AS INTEGER))) AS record_id, COALESCE(json_extract(details, '$.handled_at'), created_at) AS handled_at FROM audit_events WHERE ${where} ORDER BY handled_at DESC, id DESC LIMIT ? OFFSET ?`).all(...params, Number(limit), (Number(page) - 1) * Number(limit));
+    res.json({ month: period.month, start_at: period.start, end_at: period.end, engineers, personal: recognitionFor(req.user.id, period), history, total, page: Number(page), pages: Math.max(1, Math.ceil(total / Number(limit))) });
+  });
   app.get('/api/network-assistance', requirePermission('networks.read'), (req, res) => {
     const { status = 'Solicitada', page = '1', limit = '8' } = req.query;
     if ([status, page, limit].some(value => typeof value !== 'string') || !['', 'Solicitada', 'Atendida'].includes(status) || !/^\d+$/.test(page) || Number(page) < 1 || Number(page) > 100000 || !/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100) return res.status(400).json({ message: 'Revisa los filtros de solicitudes.' });
     const where = status ? 'WHERE network_assistance.status = ?' : '';
     const params = status ? [status] : [];
     const total = db.prepare(`SELECT COUNT(*) AS total FROM network_assistance ${where}`).get(...params).total;
-    const requests = db.prepare(`SELECT network_assistance.*, records.patient_name, records.rfc, records.date, users.name AS engineer_name FROM network_assistance JOIN records ON records.id = network_assistance.record_id LEFT JOIN users ON users.id = network_assistance.handled_by ${where} ORDER BY requested_at DESC, network_assistance.id DESC LIMIT ? OFFSET ?`).all(...params, Number(limit), (Number(page) - 1) * Number(limit));
-    res.json({ requests, total, pages: Math.max(1, Math.ceil(total / Number(limit))) });
+    const requests = db.prepare(`SELECT network_assistance.*, records.patient_name, records.rfc, records.date, handler.name AS engineer_name, assignee.name AS assigned_name FROM network_assistance JOIN records ON records.id = network_assistance.record_id LEFT JOIN users AS handler ON handler.id = network_assistance.handled_by LEFT JOIN users AS assignee ON assignee.id = network_assistance.assigned_to ${where} ORDER BY requested_at DESC, network_assistance.id DESC LIMIT ? OFFSET ?`).all(...params, Number(limit), (Number(page) - 1) * Number(limit));
+    const assignees = db.prepare("SELECT id, name FROM users WHERE active = 1 AND (is_admin = 1 OR id IN (SELECT user_id FROM user_permissions WHERE permission = 'networks.update')) ORDER BY name, id").all();
+    res.json({ requests, assignees, total, page: Number(page), pages: Math.max(1, Math.ceil(total / Number(limit))) });
   });
   app.patch('/api/network-assistance/:id', requirePermission('networks.update'), (req, res) => {
-    if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).json({ message: 'La solicitud no es válida.' });
-    if (req.body?.status !== 'Atendida') return res.status(400).json({ message: 'Selecciona Atendida para completar la solicitud.' });
+    if (!/^[1-9][0-9]*$/.test(req.params.id)) return res.status(400).json({ message: 'La solicitud no es válida.' });
     const assistance = db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(Number(req.params.id));
     if (!assistance) return res.status(404).json({ message: 'No se encontró la solicitud.' });
-    db.prepare("UPDATE network_assistance SET status = 'Atendida', handled_by = ?, handled_at = ? WHERE id = ? AND status = 'Solicitada'").run(req.user.id, new Date().toISOString(), assistance.id);
-    res.json({ request: db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(assistance.id), message: 'Asistencia de Redes atendida.' });
+    if (Object.hasOwn(req.body || {}, 'assigned_to')) {
+      if (assistance.status !== 'Solicitada') return res.status(409).json({ message: 'Solo puedes asignar solicitudes pendientes.' });
+      const assignedTo = req.body.assigned_to;
+      if (assignedTo !== null && (!Number.isSafeInteger(assignedTo) || assignedTo < 1)) return res.status(400).json({ message: 'Selecciona una persona válida de Redes.' });
+      if (assignedTo !== null && !db.prepare("SELECT users.id FROM users WHERE users.id = ? AND users.active = 1 AND (users.is_admin = 1 OR EXISTS (SELECT 1 FROM user_permissions WHERE user_id = users.id AND permission = 'networks.update'))").get(assignedTo)) return res.status(400).json({ message: 'La persona seleccionada no tiene permiso activo para atender solicitudes de Redes.' });
+      db.prepare('UPDATE network_assistance SET assigned_to = ? WHERE id = ? AND status = \'Solicitada\'').run(assignedTo, assistance.id);
+      writeAudit(req.user, 'network.assigned', 'network_assistance', assistance.id);
+      return res.json({ request: db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(assistance.id), message: assignedTo === null ? 'Solicitud sin asignar.' : 'Solicitud asignada.' });
+    }
+    if (req.body?.status !== 'Atendida') return res.status(400).json({ message: 'Selecciona Atendida para completar la solicitud.' });
+    const handledAt = new Date().toISOString();
+    let changes;
+    db.exec('BEGIN');
+    try {
+      changes = db.prepare("UPDATE network_assistance SET status = 'Atendida', handled_by = ?, handled_at = ? WHERE id = ? AND status = 'Solicitada'").run(req.user.id, handledAt, assistance.id).changes;
+      if (changes) writeAudit(req.user, 'network.completed', 'network_assistance', assistance.id, { engineer_id: req.user.id, record_id: assistance.record_id, handled_at: handledAt });
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    const completedRequest = db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(assistance.id);
+    res.json({ request: completedRequest, message: 'Asistencia de Redes atendida.', newly_completed: Boolean(changes), recognition: recognitionFor(completedRequest.handled_by) });
   });
   app.use((_req, res) => res.status(404).json({ message: 'Ruta no encontrada.' }));
   app.use((error, _req, res, _next) => {

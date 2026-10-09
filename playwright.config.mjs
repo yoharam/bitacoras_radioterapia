@@ -7,6 +7,7 @@ const baseURL = `http://localhost:${webPort}`;
 
 export default defineConfig({
   testDir: './tests',
+  testMatch: '**/*.spec.mjs',
   timeout: 60000,
   workers: 1,
   use: { baseURL, trace: 'retain-on-failure', screenshot: 'only-on-failure' },

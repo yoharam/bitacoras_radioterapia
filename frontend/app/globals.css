@@ -91,8 +91,9 @@
     }
     .radiotherapy-table td:nth-child(1),
     .radiotherapy-table td:nth-child(2),
-    .radiotherapy-table td:nth-child(5),
-    .radiotherapy-table td:nth-child(6) { grid-column: 1 / -1; }
+    .radiotherapy-table td:nth-child(3),
+    .radiotherapy-table td:nth-child(6),
+    .radiotherapy-table td:nth-child(7) { grid-column: 1 / -1; }
     .radiotherapy-table td .tdBefore {
       @apply mb-2 block text-[10px] font-medium text-muted-foreground;
       position: static; width: auto; white-space: normal;
@@ -121,3 +122,24 @@ body [data-sileo-viewport] { z-index: 80; }
 .status-journey-rail { position: absolute; top: 15px; right: 18%; left: 18%; height: 2px; background: #e9e1d4; }
 .status-journey-progress { height: 100%; background: #1e5b4f; transition: width 300ms ease; }
 @media (prefers-reduced-motion: reduce) { .status-journey-progress { transition: none; } }
+
+/* Motion is brief, contextual, and never moves the rows being read. */
+.workspace-enter { animation: workspace-enter 160ms ease-out both; }
+@keyframes workspace-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.app-modal[data-state="open"] { animation: app-modal-enter 160ms ease-out both; }
+.app-modal[data-state="closed"] { animation: app-modal-exit 130ms ease-in both; pointer-events: none; }
+[data-slot="dialog-overlay"][data-state="closed"] { animation-duration: 130ms; pointer-events: none; }
+@keyframes app-modal-enter { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes app-modal-exit { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(4px) scale(.99); } }
+.records-skeleton-line { animation: skeleton-breathe 1.6s ease-in-out infinite; }
+@keyframes skeleton-breathe { 0%, 100% { opacity: .6; } 50% { opacity: 1; } }
+.radiotherapy-table tbody tr { transition: background-color 160ms ease-out, box-shadow 160ms ease-out; }
+.radiotherapy-table tr[data-highlighted="true"] { background-color: #edf5ee; box-shadow: inset 3px 0 #1e5b4f; }
+.recognition-progress { transition: width 400ms ease-out, background-color 400ms ease-out; }
+.recognition-card, .recognition-count { transition: background-color 400ms ease-out, border-color 400ms ease-out; }
+.recognition-card[data-celebrating="true"] { animation: recognition-celebrate 900ms ease-out; }
+@keyframes recognition-celebrate { 0%, 100% { box-shadow: none; } 35% { box-shadow: 0 0 0 4px #a57f2c30; } }
+@media (prefers-reduced-motion: reduce) {
+  .workspace-enter, .app-modal, .records-skeleton-line, .recognition-card { animation: none !important; }
+  .recognition-progress, .recognition-card, .recognition-count { transition: none !important; }
+}

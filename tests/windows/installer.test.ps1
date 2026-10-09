@@ -89,9 +89,14 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $backup 'data/hospital.sqlite-wal')) 'Custom WAL was not backed up.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $backup 'data/unrelated.sqlite'))) 'Backup copied an unrelated database.'
 
-    # A ZIP installation has no Git metadata and cannot run a destructive update.
-    Assert-Throws { Update-Application } 'ZIP update was incorrectly allowed.'
-    Write-Host 'OK: syntax, configuration preservation, command failures, process ownership, occupied ports, backups and ZIP update guard.'
+    # A failed preflight must not interrupt the installed application.
+    function Install-Git { }
+    function Ensure-UpdateRepository { throw 'Preflight cannot reach main' }
+    Assert-Throws { Update-Application } 'Manual update ignored a preflight failure.'
+    $eventsBefore = $script:events.Count
+    Assert-True (-not (Update-Application -Automatic)) 'Automatic preflight failure was ignored.'
+    Assert-True ($script:events.Count -eq $eventsBefore) 'A failed check interrupted the running version.'
+    Write-Host 'OK: syntax, configuration preservation, command failures, process ownership, occupied ports, backups and automatic update fallback.'
 } finally {
     Remove-Item -LiteralPath $temporary -Recurse -Force
 }

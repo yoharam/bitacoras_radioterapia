@@ -1,5 +1,6 @@
 export async function api(path, options = {}) {
   const response = await fetch(`/api${path}`, { credentials: 'same-origin', ...options, headers: { 'Content-Type': 'application/json', 'X-Bitacoras-Request': '1', ...options.headers } });
+  if (response.status === 204) return null;
   let data;
   try { data = await response.json(); }
   catch (error) { if (error.name === 'AbortError') throw error; throw new Error('No se pudo leer la respuesta del servidor. Inténtalo de nuevo.'); }

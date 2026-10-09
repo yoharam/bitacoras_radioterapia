@@ -24,6 +24,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Fallo el segundo arranque.' }
     $secondProcess = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     if ($firstProcess.id -ne $secondProcess.id) { throw 'El segundo arranque duplico la instancia.' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action Update -NoBrowser
+    if ($LASTEXITCODE -ne 0) { throw 'Fallo la comprobacion manual de actualizaciones.' }
+    $unchangedProcess = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    if ($firstProcess.id -ne $unchangedProcess.id) { throw 'Una revision sin cambios reinicio innecesariamente la aplicacion.' }
+    $buildRevision = Join-Path $root '.windows\build-revision.txt'
+    if (-not (Test-Path -LiteralPath $buildRevision)) { throw 'La compilacion no quedo asociada a su revision.' }
+    Remove-Item -LiteralPath $buildRevision
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action Update -NoBrowser
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo recuperar una compilacion anterior al codigo instalado.' }
+    if (-not (Test-Path -LiteralPath $buildRevision)) { throw 'No se reconstruyo la compilacion actual.' }
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
     $body = @{ email = 'windows-test@bitacoras.local'; password = $password } | ConvertTo-Json
     $login = Invoke-RestMethod -Uri "http://127.0.0.1:$($settings.webPort)/api/auth/login" -Method Post -ContentType 'application/json' -Body $body -WebSession $session -Headers @{ 'X-Bitacoras-Request' = '1'; Origin = $settings.url }
@@ -37,7 +47,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo activar el inicio automatico.' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action DisableAutostart
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo desactivar el inicio automatico.' }
-    Write-Host 'OK: instalacion, API, administrador, arranque repetido, respaldo y acceso directo de inicio automatico.'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action DisableAutoUpdate
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo desactivar la actualizacion al abrir.' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action EnableAutoUpdate
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo activar la actualizacion al abrir.' }
+    Write-Host 'OK: instalacion, administrador, actualizacion al abrir, comprobacion sin reinicio, respaldo e inicio automatico.'
 } catch {
     foreach ($log in @('application.log', 'error.log')) {
         $file = Join-Path $root ('.windows\' + $log)

@@ -40,14 +40,18 @@ Puedes instalar y usar el sistema sin escribir los comandos de los apartados sig
 
 1. Descarga el repositorio desde **Code → Download ZIP** en GitHub, o clónalo con Git.
 2. Extrae el ZIP completo en una carpeta permanente de tu usuario, por ejemplo `C:\Users\TuUsuario\Bitacoras`. No ejecutes el instalador dentro del ZIP ni uses `Program Files`, carpetas de red o carpetas sincronizadas para la base local.
-3. Haz doble clic en **`Instalar.cmd`**. Si falta Node.js o es demasiado antiguo, el instalador intenta instalar Node.js LTS mediante WinGet; Windows puede pedir permiso de administrador. Si WinGet no está disponible, muestra cómo instalar Node.js y puedes volver a intentarlo.
+3. Haz doble clic en **`Instalar.cmd`**. Si faltan Node.js o Git, el instalador intenta instalarlos mediante WinGet; Windows puede pedir permiso de administrador. Si WinGet no está disponible, muestra cómo instalar las herramientas y puedes volver a intentarlo.
 4. Introduce el nombre, correo y contraseña del administrador inicial. La contraseña se pide dos veces, no se muestra y debe tener entre 12 y 200 caracteres. Si ya existe `.env`, se conserva y no vuelve a pedir esos datos.
 5. El instalador descarga las dependencias con pnpm 11.22.0, compila la aplicación, crea el acceso directo **Bitácoras Institucionales** en el escritorio y ofrece iniciarla automáticamente al entrar a Windows.
 6. Espera a que se abra el navegador. Después puedes cerrar la ventana del instalador: la API y el frontend siguen en segundo plano.
 
-La primera instalación necesita internet para Node.js y las dependencias. Para la descarga ZIP y el uso diario no necesitas Git ni instalar pnpm globalmente: el instalador ejecuta la versión fijada desde la caché de npm. La instalación se realiza para el usuario actual; ejecuta `Instalar.cmd` con tu sesión habitual, sin abrirlo con otra cuenta de administrador.
+La primera instalación necesita internet para las herramientas y las dependencias. Git permite recibir las actualizaciones de `main`; pnpm se ejecuta con la versión fijada desde la caché de npm, sin instalarlo globalmente. La instalación se realiza para el usuario actual; ejecuta `Instalar.cmd` con tu sesión habitual, sin abrirlo con otra cuenta de administrador.
 
 Para volver a usarlo, abre el acceso directo del escritorio o **`Bitacoras.cmd`**. El arranque evita duplicar una instancia y abre el navegador después de verificar la página, la API y la conexión entre ambos servicios. Los puertos de producción deben estar libres; si detecta otra aplicación en ellos, muestra el error sin detenerla. Detén primero cualquier instancia abierta con `npm run dev`.
+
+**Al abrir Bitácoras se buscan actualizaciones en `main`.** Si hay una revisión nueva, se detiene la instancia, se respalda la configuración y los datos, se actualiza el código, se recompila y se vuelve a iniciar. Si ya tienes la revisión publicada y su compilación, el sistema arranca sin reinstalar dependencias ni reiniciar una instancia activa. Si el código ya se actualizó pero todavía hay una compilación anterior, recompila antes de abrir, para que la interfaz corresponda al código instalado. Si no hay internet o falla la comprobación previa, abre la versión instalada. La actualización también se comprueba cuando usas el inicio automático de Windows.
+
+Para actualizar expresamente con doble clic, abre **`Actualizar.cmd`**. El actualizador no sube tus cambios locales: los cambios de desarrollo deben publicarse primero en `main`. Una instalación con archivos modificados, otra rama, otro repositorio o commits locales que no permiten avanzar a `origin/main` conserva esos cambios y no se actualiza automáticamente.
 
 Desde una terminal en la carpeta del proyecto también puedes ejecutar:
 
@@ -57,7 +61,9 @@ Desde una terminal en la carpeta del proyecto también puedes ejecutar:
 | `.\Bitacoras.cmd Status` | Consultar si los servicios responden |
 | `.\Bitacoras.cmd Stop` | Detener esta instancia y sus dos servicios |
 | `.\Bitacoras.cmd Backup` | Detener brevemente, respaldar datos y configuración, y reanudar si estaba iniciada |
-| `.\Bitacoras.cmd Update` | Actualizar una instalación clonada con Git, respaldar y recompilar |
+| `.\Bitacoras.cmd Update` o `Actualizar.cmd` | Comprobar `origin/main`, respaldar y actualizar si hay una revisión nueva |
+| `.\Bitacoras.cmd EnableAutoUpdate` | Activar la comprobación de actualizaciones al abrir, habilitada por defecto |
+| `.\Bitacoras.cmd DisableAutoUpdate` | Desactivar la comprobación al abrir y conservar la actualización manual |
 | `.\Bitacoras.cmd EnableAutostart` | Activar el arranque al iniciar sesión para el usuario actual |
 | `.\Bitacoras.cmd DisableAutostart` | Desactivar ese arranque automático |
 
@@ -65,7 +71,9 @@ El inicio automático usa un acceso directo en la carpeta Inicio del usuario; lo
 
 Los registros de ejecución quedan en `.windows/application.log` y `.windows/error.log`. Los respaldos se guardan en `.windows/backups/`, con una carpeta por operación. Esta carpeta y el `.env` nuevo se protegen con permisos de Windows para el usuario actual, SYSTEM y administradores. Cada respaldo incluye `.env`, los datos SQLite y sus archivos auxiliares; contiene información privada y no debe publicarse. Si configuraste `DB_PATH`, respalda ese archivo y sus auxiliares y guarda su ruta en `backup.json`. Copia periódicamente los respaldos a otro almacenamiento protegido, pues el respaldo local no protege contra fallas del disco.
 
-Antes de reinstalar o actualizar se crea un respaldo. La actualización automática requiere Git, una rama con seguimiento remoto y una carpeta sin cambios locales; usa `git pull --ff-only` y conserva `.env` y la base. Si falla, indica el error y la ubicación del respaldo; corrige el problema y vuelve a ejecutar `Instalar.cmd`. Si descargaste un ZIP, detén el sistema, haz un respaldo y reemplaza los archivos del proyecto por los del nuevo ZIP **conservando `.env`, `backend/data/`, `.windows/` y cualquier `DB_PATH` personalizado**; después ejecuta `Instalar.cmd` otra vez. No se sobrescriben archivos locales mediante una actualización forzada.
+Antes de reinstalar o aplicar una actualización se crea un respaldo. El actualizador comprueba el repositorio oficial, descarga `main` y permite únicamente avanzar el historial sin sobrescribir cambios locales. Conserva `.env` y la base. Si falla después de iniciar la actualización, indica el error y la ubicación del respaldo y deja la aplicación detenida; corrige el problema y vuelve a ejecutar `Instalar.cmd`.
+
+Si descargaste un ZIP, el instalador o actualizador puede prepararlo para recibir actualizaciones: compara sus archivos con las últimas 100 revisiones de `main` y agrega la información de Git únicamente cuando encuentra una coincidencia exacta. Este paso conserva los archivos originales, configuración y datos. Si el ZIP tiene cambios propios o no coincide, muestra el error y conserva la carpeta; no aplica una actualización forzada. Para una instalación antigua que todavía no tiene este actualizador, detén el sistema, respalda y extrae el ZIP nuevo completo **conservando `.env`, `backend/data/`, `.windows/` y cualquier `DB_PATH` personalizado**; ejecuta `Instalar.cmd` una vez. Desde entonces recibirá las versiones publicadas al abrir.
 
 Para una instalación sin preguntas, prepara primero `.env` y ejecuta desde PowerShell:
 
@@ -172,7 +180,7 @@ La aplicación escucha en esta computadora (`127.0.0.1`). Usa HTTP local, sin do
 1. Inicia sesión y abre **Pacientes**.
 2. Selecciona el período: Hoy, Ayer, Esta semana, Semana pasada, Este mes o Todo el historial. También puedes elegir **Día específico** o **Rango de fechas**. El sistema muestra el día de la semana y la fecha, por ejemplo: “jueves, 8 de octubre de 2026”.
 3. Presiona **Registrar paciente**.
-4. Captura nombre completo, día y fecha de atención y hora programada de tratamiento. La hora de llegada se registra después. Puedes añadir el **RFC** con homoclave y el **tipo de cirugía**: Hospitalizado o Ambulatorio; ambos son opcionales. El RFC se guarda en mayúsculas.
+4. Captura nombre completo, día y fecha de atención y hora programada de tratamiento. La hora de llegada se registra después. Puedes añadir el **RFC** con homoclave y el **tipo de cirugía**: Hospitalizado o Ambulatorio; ambos son opcionales. El RFC se guarda en mayúsculas. El **tipo de derechohabiencia** es opcional y se selecciona de un catálogo de 24 claves: escribe el código o parte del nombre, sin distinguir acentos o mayúsculas, y elige una sugerencia con el ratón o con ↑, ↓ y Enter. La clave y el nombre aparecen en su columna y en la ficha del paciente.
 5. Cuando llegue, pulsa **Registrar llegada** en su fila. El sistema guarda la hora local; después habilita el botón del hospital para solicitar internet a Redes.
 6. El registro comienza **En espera**. Usa la acción **Avanzar** para pasar a **En tratamiento** cuando inicie la atención y a **Atendido** al terminar. El detalle del paciente muestra las tres etapas en una línea de progreso. Editar permite corregir el estado si hace falta. Las observaciones son opcionales.
 7. Pulsa el folio, el paciente, el RFC, la fecha, los horarios o el estado para abrir su ficha. Puedes consultar, editar o eliminar el registro según tus permisos.
@@ -185,7 +193,7 @@ Cada registro corresponde a una atención. El mismo paciente puede tener registr
 - **Período y estado:** filtran los registros; “Todo el historial” muestra todos los días. Los rangos incluyen ambos extremos y se consultan con “Aplicar rango”.
 - **Resumen:** muestra totales y estados según los filtros aplicados.
 - **Orden:** fecha descendente y hora programada ascendente dentro del día.
-- **CSV:** exporta todos los resultados filtrados, incluyendo día, fecha, paciente, RFC, tipo de cirugía, ambos horarios, estado y observaciones.
+- **CSV:** exporta todos los resultados filtrados, incluyendo día, fecha, paciente, RFC, tipo de cirugía, tipo de derechohabiencia, ambos horarios, estado y observaciones.
 - **Imprimir / PDF:** abre un reporte de los resultados filtrados. Desde el diálogo del navegador puedes imprimirlo o guardarlo como PDF; requiere permiso de exportación.
 - **Asistencia de Redes:** el icono del hospital en las acciones del paciente solicita ayuda para conectarlo a internet y anima un recorrido hospital → salud → internet en la confirmación verde «Tu ingeniero va en camino». La solicitud queda guardada; el icono se deshabilita mientras esté pendiente para evitar duplicados. El menú **Redes** permite consultar pendientes e historial y marcar como atendida después de conectar al paciente; se actualiza cada 15 segundos mientras está visible. Este flujo registra solicitudes dentro de la aplicación; el mensaje de confirmación no verifica un desplazamiento real ni envía avisos por correo o WhatsApp.
 - **Responsive:** la tabla se transforma en fichas cuando el espacio disponible es reducido, también en tabletas con menú lateral.
@@ -280,7 +288,7 @@ npm run build
 npm start
 ```
 
-Las migraciones se ejecutan automáticamente al iniciar el backend. Los registros anteriores se conservan y los nuevos campos RFC y tipo de cirugía quedan sin registrar hasta que se capturen. Los registros que todavía no tienen paciente ni horarios aparecen como pendientes de completar y su información original sigue disponible. Los usuarios de la versión inicial conservan su acceso de administrador.
+Las migraciones se ejecutan automáticamente al iniciar el backend. Los registros anteriores se conservan y los nuevos campos RFC, tipo de cirugía y tipo de derechohabiencia quedan sin registrar hasta que se capturen. El catálogo de derechohabiencia se carga automáticamente en la tabla `entitlement_types`, y cada atención guarda su clave en `records.entitlement_type`. Los registros que todavía no tienen paciente ni horarios aparecen como pendientes de completar y su información original sigue disponible. Los usuarios de la versión inicial conservan su acceso de administrador.
 
 ## 8. Problemas frecuentes
 
@@ -316,7 +324,7 @@ Las pruebas de API usan Express y SQLite reales, sin abrir puertos TCP. Cubren C
 Para validar la configuración y las protecciones del instalador Windows:
 
 ```powershell
-node --test tests/windows/config.test.mjs
+node --test tests/windows/config.test.mjs tests/windows/update.test.mjs
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\installer.test.ps1
 ```
 

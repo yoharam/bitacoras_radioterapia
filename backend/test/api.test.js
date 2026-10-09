@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp, hashPassword } from '../src/app.js';
 import { request } from './request.js';
+import { ENTITLEMENT_TYPES, searchEntitlementTypes } from '../../shared/entitlement-types.mjs';
 
 const credentials = { email: 'admin@bitacoras.local', password: 'PruebaSegura2026!' };
 const sample = { patient_name: 'Paciente de prueba María López', date: '2026-10-08', arrival_time: '08:15', treatment_time: '08:45', observations: 'Registro ficticio para pruebas.', status: 'Pendiente' };
@@ -105,7 +106,8 @@ test('búsqueda sin acentos, filtros y paginación; consultas parametrizadas', a
 });
 test('valida fechas, tamaños, enums, filtros e identificadores', async t => {
   const { app, cookie } = await fixture(t);
-  for (const change of [{ date: '2026-02-30' }, { date: '01/10/2026' }, { status: 'Inventado' }, { patient_name: '  ' }, { patient_name: null }, { patient_name: 'x'.repeat(151) }, { observations: 'x'.repeat(3001) }, { arrival_time: '' }, { arrival_time: '24:00' }, { arrival_time: '08:60' }, { treatment_time: '8:00' }, { treatment_time: null }, { treatment_time: '09:00:00' }]) assert.equal((await request(app, '/api/records', { method: 'POST', cookie, body: { ...sample, ...change } })).status, 400);
+  assert.equal((await request(app, '/api/records', { method: 'POST', cookie, body: { ...sample, arrival_time: '' } })).status, 201);
+  for (const change of [{ date: '2026-02-30' }, { date: '01/10/2026' }, { status: 'Inventado' }, { patient_name: '  ' }, { patient_name: null }, { patient_name: 'x'.repeat(151) }, { observations: 'x'.repeat(3001) }, { arrival_time: '24:00' }, { arrival_time: '08:60' }, { treatment_time: '8:00' }, { treatment_time: null }, { treatment_time: '09:00:00' }]) assert.equal((await request(app, '/api/records', { method: 'POST', cookie, body: { ...sample, ...change } })).status, 400);
   for (const path of ['/api/records?page=0', '/api/records?limit=9999', '/api/records?status=Error', '/api/records?date=2026-02-30', '/api/records?from=2026-10-09&to=2026-10-01', '/api/records?q=uno&q=dos', '/api/records/not-an-id']) assert.equal((await request(app, path, { cookie })).status, 400);
 });
 test('rangos inclusivos: lista, contadores, exportación y sugerencias respetan los mismos filtros', async t => {
@@ -128,6 +130,30 @@ test('rangos inclusivos: lista, contadores, exportación y sugerencias respetan 
   assert.equal((await request(app, `/api/records/suggestions${filters}`)).status, 401);
   assert.equal((await request(app, '/api/records/suggestions?from=2026-10-11&to=2026-10-05', { cookie })).status, 400);
 });
+test('catálogo de derechohabiencia: claves, validación, edición y exportación', async t => {
+  const { app, db, cookie } = await fixture(t);
+  assert.equal(ENTITLEMENT_TYPES.length, 24);
+  assert.deepEqual(db.prepare('SELECT code, name FROM entitlement_types ORDER BY code').all().map(type => ({ ...type })), ENTITLEMENT_TYPES);
+  assert.deepEqual(searchEntitlementTypes('95').map(type => type.code), ['95']);
+  assert.deepEqual(searchEntitlementTypes('IMSS bienestar').map(type => type.code), ['95', '96']);
+  assert.deepEqual(searchEntitlementTypes('conyuge').map(type => type.code), ['71', '81']);
+  for (const type of ENTITLEMENT_TYPES) {
+    const result = await request(app, '/api/records', { method: 'POST', cookie, body: { ...sample, entitlement_type: type.code } });
+    assert.equal(result.status, 201);
+    assert.equal(result.body.record.entitlement_type, type.code);
+  }
+  for (const value of ['11', 'Trabajador', '95 · IMSS BIENESTAR Hombre', 95, null, {}, true]) {
+    const body = { ...sample, entitlement_type: value };
+    assert.equal((await request(app, '/api/records', { method: 'POST', cookie, body })).status, 400);
+    assert.equal((await request(app, '/api/records/1', { method: 'PUT', cookie, body })).status, 400);
+  }
+  assert.equal((await request(app, '/api/records/1', { method: 'PUT', cookie, body: sample })).body.record.entitlement_type, '10');
+  assert.equal((await request(app, '/api/records/1', { method: 'PUT', cookie, body: { ...sample, entitlement_type: '99' } })).body.record.entitlement_type, '99');
+  assert.equal((await request(app, '/api/records/export?limit=100', { cookie })).body.records.find(record => record.id === 1).entitlement_type, '99');
+  assert.throws(() => db.prepare('UPDATE records SET entitlement_type = ? WHERE id = 1').run('11'), /FOREIGN KEY/);
+  assert.equal((await request(app, '/api/records/1', { method: 'PUT', cookie, body: { ...sample, entitlement_type: '' } })).body.record.entitlement_type, null);
+});
+
 test('persiste registros y sesiones al reabrir SQLite y revoca sesión al salir', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'bitacoras-test-'));
   let db;
@@ -135,7 +161,7 @@ test('persiste registros y sesiones al reabrir SQLite y revoca sesión al salir'
     let result = await createApp({ databasePath: join(directory, 'test.sqlite'), adminPassword: credentials.password });
     db = result.db;
     const cookie = await session(result.app);
-    await request(result.app, '/api/records', { method: 'POST', cookie, body: { ...sample, rfc: 'LOHM900101AB1', surgery_type: 'Hospitalizado' } });
+    await request(result.app, '/api/records', { method: 'POST', cookie, body: { ...sample, rfc: 'LOHM900101AB1', surgery_type: 'Hospitalizado', entitlement_type: '95' } });
     db.close(); db = undefined;
     result = await createApp({ databasePath: join(directory, 'test.sqlite'), adminPassword: 'OtraClave2026!' });
     db = result.db;
@@ -145,6 +171,8 @@ test('persiste registros y sesiones al reabrir SQLite y revoca sesión al salir'
     assert.equal((await request(result.app, '/api/records', { cookie })).body.records[0].treatment_time, '08:45');
     assert.equal((await request(result.app, '/api/records', { cookie })).body.records[0].rfc, 'LOHM900101AB1');
     assert.equal((await request(result.app, '/api/records', { cookie })).body.records[0].surgery_type, 'Hospitalizado');
+    assert.equal((await request(result.app, '/api/records', { cookie })).body.records[0].entitlement_type, '95');
+    assert.equal(db.prepare('SELECT COUNT(*) AS total FROM entitlement_types').get().total, 24);
     await request(result.app, '/api/auth/logout', { method: 'POST', cookie });
     assert.equal((await request(result.app, '/api/auth/me', { cookie })).status, 401);
     assert.equal((await request(result.app, '/api/auth/login', { method: 'POST', body: credentials })).status, 200);
@@ -181,6 +209,8 @@ test('migra la tabla anterior sin inventar pacientes ni perder información; la 
       assert.equal(record.treatment_time, null);
       assert.equal(record.rfc, null);
       assert.equal(record.surgery_type, null);
+      assert.equal(record.entitlement_type, null);
+      assert.equal(db.prepare('SELECT COUNT(*) AS total FROM entitlement_types').get().total, 24);
       assert.equal(record.title, 'Actividad anterior ficticia');
       assert.equal(record.description, 'Descripción original');
       assert.equal(record.priority, 'Alta');
@@ -212,4 +242,58 @@ test('limita intentos fallidos y no expone el hash en la sesión', async t => {
   assert.equal((await request(app, '/api/auth/me', { cookie })).body.user.password_hash, undefined);
   for (let attempt = 0; attempt < 5; attempt++) assert.equal((await request(app, '/api/auth/login', { method: 'POST', body: { ...credentials, password: 'incorrecta' } })).status, 401);
   assert.equal((await request(app, '/api/auth/login', { method: 'POST', body: credentials })).status, 429);
+});
+
+test('registra y conserva las horas reales al avanzar la atención', async t => {
+  const { app, cookie } = await fixture(t);
+  const created = await request(app, '/api/records', { method: 'POST', cookie, body: sample });
+  const id = created.body.record.id;
+  assert.equal(created.body.record.treatment_started_at, null);
+  assert.equal(created.body.record.treatment_completed_at, null);
+  await request(app, `/api/records/${id}/arrival`, { method: 'POST', cookie, body: { arrival_time: sample.arrival_time } });
+  const started = await request(app, `/api/records/${id}`, { method: 'PUT', cookie, body: { ...sample, status: 'En proceso' } });
+  assert.equal(started.status, 200);
+  assert.ok(Number.isFinite(Date.parse(started.body.record.treatment_started_at)));
+  assert.equal(started.body.record.treatment_completed_at, null);
+  const startedAt = started.body.record.treatment_started_at;
+  const repeated = await request(app, `/api/records/${id}`, { method: 'PUT', cookie, body: { ...sample, status: 'En proceso', observations: 'Cambio no relacionado.' } });
+  assert.equal(repeated.body.record.treatment_started_at, startedAt);
+  const completed = await request(app, `/api/records/${id}`, { method: 'PUT', cookie, body: { ...sample, status: 'Completada' } });
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.record.treatment_started_at, startedAt);
+  assert.ok(Number.isFinite(Date.parse(completed.body.record.treatment_completed_at)));
+  assert.equal((await request(app, `/api/records/${id}`, { cookie })).body.record.treatment_completed_at, completed.body.record.treatment_completed_at);
+});
+
+test('bloquea sesiones inactivas y renueva su vencimiento al registrar actividad', async t => {
+  const { app, db, cookie } = await fixture(t);
+  const first = db.prepare('SELECT idle_expires_at FROM sessions').get().idle_expires_at;
+  assert.ok(first > Date.now());
+  assert.equal((await request(app, '/api/auth/activity', { method: 'POST', cookie })).status, 204);
+  assert.ok(db.prepare('SELECT idle_expires_at FROM sessions').get().idle_expires_at >= first);
+  db.prepare('UPDATE sessions SET idle_expires_at = ?').run(Date.now() - 1);
+  assert.equal((await request(app, '/api/auth/me', { cookie })).status, 401);
+});
+
+test('audita accesos y cambios sin incluir datos personales del paciente', async t => {
+  const { app, cookie } = await fixture(t);
+  const created = await request(app, '/api/records', { method: 'POST', cookie, body: sample });
+  assert.equal(created.status, 201);
+  const id = created.body.record.id;
+  await request(app, `/api/records/${id}`, { method: 'PUT', cookie, body: { ...sample, observations: 'Nota sensible ficticia.' } });
+  await request(app, `/api/records/${id}`, { method: 'DELETE', cookie });
+  const result = await request(app, '/api/audit?page=1&limit=100', { cookie });
+  assert.equal(result.status, 200);
+  assert.ok(result.body.events.some(event => event.action === 'auth.login_succeeded'));
+  assert.ok(result.body.events.some(event => event.action === 'record.created'));
+  assert.ok(result.body.events.some(event => event.action === 'record.updated'));
+  assert.ok(result.body.events.some(event => event.action === 'record.deleted'));
+  const serialized = JSON.stringify(result.body.events);
+  assert.equal(serialized.includes(sample.patient_name), false);
+  assert.equal(serialized.includes('Nota sensible ficticia.'), false);
+  const person = { name: 'Consulta', email: 'consulta@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['radiotherapy.read'] };
+  await request(app, '/api/users', { method: 'POST', cookie, body: person });
+  const session = await request(app, '/api/auth/login', { method: 'POST', body: person });
+  const userCookie = [].concat(session.headers['set-cookie'])[0].split(';')[0];
+  assert.equal((await request(app, '/api/audit', { cookie: userCookie })).status, 403);
 });

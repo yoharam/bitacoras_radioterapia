@@ -16,14 +16,23 @@ test('períodos, rango inclusivo, búsqueda predictiva y reporte de todas las p�
   try {
     for (let index = 0; index < 107; index++) {
       const date = index < 103 ? '2026-10-08' : ['2026-10-05', '2026-10-11', '2026-10-04', '2026-10-12'][index - 103];
-      const result = await page.request.post('/api/records', { headers: { 'X-Bitacoras-Request': '1' }, data: { patient_name: `${index < 103 ? 'María' : 'Ana'} ${marker}`, date, rfc: 'LOHM900101AB1', surgery_type: index % 2 ? 'Ambulatorio' : 'Hospitalizado', arrival_time: '08:00', treatment_time: '08:30', status: 'Pendiente', observations: `Atención de prueba ${index}` } });
+      const result = await page.request.post('/api/records', { headers: { 'X-Bitacoras-Request': '1' }, data: { patient_name: `${index < 103 ? 'María' : 'Ana'} ${marker}`, date, rfc: 'LOHM900101AB1', surgery_type: index % 2 ? 'Ambulatorio' : 'Hospitalizado', entitlement_type: index % 2 ? '96' : '95', arrival_time: '08:00', treatment_time: '08:30', status: 'Pendiente', observations: `Atención de prueba ${index}` } });
       expect(result.status()).toBe(201);
       ids.push((await result.json()).record.id);
     }
     const filters = page.getByRole('region', { name: 'Filtros de consulta' });
     const search = page.getByRole('combobox', { name: 'Buscar pacientes' });
+    await filters.screenshot({ path: 'test-results/filtros-nuevo-escritorio.png' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await filters.screenshot({ path: 'test-results/filtros-nuevo-movil.png' });
+    await page.setViewportSize({ width: 1280, height: 900 });
     await search.fill(marker);
-    const count = value => expect(filters.locator('> div').last().getByRole('status')).toHaveText(`${value} registros encontrados`);
+    const count = value => expect(page.getByTestId('records-count')).toHaveText(String(value));
+    await expect(filters.getByRole('status')).toHaveCount(0);
+    const todayButton = page.getByRole('button', { name: 'Hoy', exact: true });
+    await todayButton.hover();
+    await expect.poll(() => todayButton.evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0.2s');
+    await expect.poll(() => todayButton.evaluate(element => getComputedStyle(element).translate)).not.toBe('none');
     await count(103);
     await page.getByRole('button', { name: 'Esta semana', exact: true }).click();
     await count(105);
@@ -31,7 +40,7 @@ test('períodos, rango inclusivo, búsqueda predictiva y reporte de todas las p�
     await page.getByRole('button', { name: 'Página siguiente', exact: true }).click();
     await expect(page.getByText('Página 2 de 14')).toBeVisible();
     await page.getByRole('button', { name: 'Semana pasada', exact: true }).click();
-    await expect(filters.locator('> div').last().getByRole('status')).toHaveText('1 registro encontrado');
+    await count(1);
     await expect(page.getByText('Página 1 de 1')).toBeVisible();
     await page.getByRole('button', { name: 'Este mes', exact: true }).click();
     await count(107);
@@ -40,7 +49,7 @@ test('períodos, rango inclusivo, búsqueda predictiva y reporte de todas las p�
     await expect(page.getByRole('button', { name: 'Ver todo el historial', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Todo el historial', exact: true }).click();
     await count(107);
-    await page.getByLabel('O elige tus fechas').selectOption('range');
+    await page.getByLabel('O elige tus fechas', { exact: true }).selectOption('range');
     await page.getByLabel('Desde', { exact: true }).fill('2026-10-11');
     await page.getByLabel('Hasta', { exact: true }).fill('2026-10-05');
     await expect(page.getByRole('button', { name: 'Aplicar rango' })).toBeDisabled();
@@ -66,6 +75,8 @@ test('períodos, rango inclusivo, búsqueda predictiva y reporte de todas las p�
     await expect(page.getByRole('listbox')).toHaveCount(0);
     for (const width of [320, 768, 1440]) {
       await page.setViewportSize({ width, height: 1000 });
+      const sidebar = page.locator('aside').first();
+      if (await sidebar.evaluate(element => element.classList.contains('translate-x-0'))) await page.getByRole('button', { name: 'Cerrar menú', exact: true }).last().click();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: `test-results/filtros-${width}.png`, fullPage: true });
     }
@@ -82,6 +93,9 @@ test('períodos, rango inclusivo, búsqueda predictiva y reporte de todas las p�
     await expect(report.locator('tbody')).toContainText('Atención de prueba 102');
     await expect(report.getByRole('columnheader', { name: 'RFC', exact: true })).toBeVisible();
     await expect(report.getByRole('columnheader', { name: 'Tipo de cirugía', exact: true })).toBeVisible();
+    await expect(report.getByRole('columnheader', { name: 'Tipo de derechohabiencia', exact: true })).toBeVisible();
+    await expect(report.locator('tbody')).toContainText('95 · IMSS BIENESTAR Hombre');
+    await expect(report.locator('tbody')).toContainText('96 · IMSS BIENESTAR Mujer');
     await expect(report.locator('tbody')).toContainText('LOHM900101AB1');
     await expect(report.locator('tbody')).toContainText('Hospitalizado');
     await expect(report.locator('tbody')).toContainText('Ambulatorio');

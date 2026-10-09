@@ -1,7 +1,7 @@
 # Compatible with Windows PowerShell 5.1. Keep this file ASCII for its default encoding.
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Start', 'Stop', 'Status', 'Backup', 'Update', 'EnableAutostart', 'DisableAutostart')]
+    [ValidateSet('Install', 'Start', 'Stop', 'Status', 'Backup', 'Update', 'EnableAutostart', 'DisableAutostart', 'EnableAutoUpdate', 'DisableAutoUpdate')]
     [string]$Action = 'Install',
     [switch]$NoBrowser,
     [switch]$Unattended,
@@ -15,6 +15,7 @@ $script:Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $script:StateDirectory = Join-Path $script:Root '.windows'
 $script:StateFile = Join-Path $script:StateDirectory 'process.json'
 $script:ConfigHelper = Join-Path $PSScriptRoot 'config.mjs'
+$script:UpdateHelper = Join-Path $PSScriptRoot 'update.mjs'
 $script:Runner = Join-Path $script:Root 'scripts\run.mjs'
 $script:Node = $null
 $script:HealthFailure = 'Los servicios todavia no responden.'
@@ -51,6 +52,23 @@ function Install-Node {
     Invoke-Checked 'winget.exe' @('install', '--id', 'OpenJS.NodeJS.LTS', '--exact', '--source', 'winget', '--silent', '--accept-package-agreements', '--accept-source-agreements')
     Refresh-Path
     Require-Node
+}
+
+function Install-Git {
+    if (Get-Command git.exe -ErrorAction SilentlyContinue) { return }
+    if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { throw 'Instala Git desde https://git-scm.com/downloads para recibir actualizaciones de main.' }
+    Write-Host 'Instalando Git para las actualizaciones de main. Windows puede solicitar permiso de administrador.'
+    Invoke-Checked 'winget.exe' @('install', '--id', 'Git.Git', '--exact', '--source', 'winget', '--silent', '--accept-package-agreements', '--accept-source-agreements')
+    Refresh-Path
+    if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { throw 'No se encontro Git despues de instalarlo. Abre de nuevo Actualizar.cmd.' }
+}
+
+function Ensure-UpdateRepository {
+    if (-not (Test-Path -LiteralPath (Join-Path $script:Root '.git'))) {
+        Write-Host 'Preparando actualizaciones del ZIP; se verificaran los archivos antes de agregar Git.'
+        $message = & $script:Node $script:UpdateHelper bootstrap
+        if ($LASTEXITCODE -ne 0) { throw ($message -join ' ') }
+    }
 }
 
 function Protect-Path {
@@ -202,6 +220,10 @@ function Install-Dependencies {
     if (-not (Test-Path -LiteralPath $npm)) { throw 'No se encontro npm.cmd junto a Node.js. Reinstala Node.js LTS.' }
     Invoke-Checked $npm @('exec', '--yes', '--package=pnpm@11.22.0', '--', 'pnpm', 'install', '--frozen-lockfile')
     Invoke-Checked $npm @('run', 'build')
+    if (Get-Command git.exe -ErrorAction SilentlyContinue) {
+        $revision = & git.exe rev-parse HEAD
+        if ($LASTEXITCODE -eq 0) { $revision | Set-Content -LiteralPath (Join-Path $script:StateDirectory 'build-revision.txt') -Encoding ASCII }
+    }
 }
 
 function Backup-Application {
@@ -233,23 +255,40 @@ function Backup-Application {
 }
 
 function Update-Application {
-    if (-not (Test-Path -LiteralPath (Join-Path $script:Root '.git'))) { throw 'Esta carpeta se descargo como ZIP. Para actualizar automaticamente usa una instalacion clonada con Git. Consulta README.md.' }
-    if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { throw 'Instala Git desde https://git-scm.com/downloads y vuelve a ejecutar Bitacoras.cmd Update.' }
-    $changes = & git.exe status --porcelain
-    if ($LASTEXITCODE -ne 0) { throw 'No se pudo comprobar el estado de Git.' }
-    if ($changes) { throw 'Hay cambios locales en el proyecto. Conservalos antes de actualizar; no se sobrescribiran.' }
-    # Fetch first: a network failure must not interrupt a working installation.
-    Invoke-Checked 'git.exe' @('fetch', 'origin')
-    $previous = & git.exe rev-parse HEAD
-    if ($LASTEXITCODE -ne 0) { throw 'No se pudo obtener la revision actual.' }
+    param([switch]$Automatic, [switch]$QuietBrowser)
+    # All checks and downloads happen before interrupting an existing instance.
+    try {
+        if ($Automatic) {
+            if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { throw 'Falta Git. Ejecuta Actualizar.cmd una vez para instalarlo.' }
+        } else { Install-Git }
+        Ensure-UpdateRepository
+        $output = & $script:Node $script:UpdateHelper plan
+        if ($LASTEXITCODE -ne 0) { throw ($output -join ' ') }
+        $plan = $output | ConvertFrom-Json
+    } catch {
+        if ($Automatic) {
+            Write-Host ('Se abrira la version instalada: ' + $_.Exception.Message)
+            return $false
+        }
+        throw
+    }
+    $revisionFile = Join-Path $script:StateDirectory 'build-revision.txt'
+    $builtRevision = if (Test-Path -LiteralPath $revisionFile) { (Get-Content -LiteralPath $revisionFile -Raw).Trim() } else { '' }
+    $settings = Get-Settings
+    $needsBuild = ($builtRevision -ne $plan.current) -or (-not (Test-Path -LiteralPath $settings.buildId))
+    if (-not $plan.changed -and -not $needsBuild) { Write-Host 'Ya tienes la ultima version de main y su compilacion.'; return $false }
+    if ($plan.changed) { Write-Host "Hay una version nueva de main: $($plan.target.Substring(0, 7)). Preparando actualizacion..." }
+    else { Write-Host 'El codigo esta actualizado; preparando su compilacion para mostrar la interfaz actual.' }
     $wasRunning = [bool](Get-OwnedProcess)
     if ($wasRunning) { Stop-Application }
     try {
         $backup = Backup-Application
-        Write-Host "Antes de actualizar se respaldo la instalacion en $backup. Revision anterior: $previous"
-        Invoke-Checked 'git.exe' @('pull', '--ff-only')
+        Write-Host "Antes de actualizar se respaldo la instalacion en $backup. Revision anterior: $($plan.current)"
+        if ($plan.changed) { Invoke-Checked 'git.exe' @('merge', '--ff-only', 'refs/remotes/origin/main') }
         Install-Dependencies
-        Start-Application -QuietBrowser
+        Start-Application -QuietBrowser:$QuietBrowser
+        Write-Host "Actualizacion terminada: $($plan.target.Substring(0, 7))."
+        return $true
     } catch {
         Write-Host 'La actualizacion no termino. Se conservaron .env, datos y respaldo. La aplicacion queda detenida; corrige el error y ejecuta Instalar.cmd.'
         throw
@@ -277,6 +316,8 @@ try {
     switch ($Action) {
         'Install' {
             New-Configuration
+            try { Install-Git; Ensure-UpdateRepository }
+            catch { Write-Host ('La instalacion continuara; las actualizaciones requieren resolver esto: ' + $_.Exception.Message) }
             $settings = Get-Settings
             if (Get-OwnedProcess) { Stop-Application }
             Assert-FreePorts $settings
@@ -288,7 +329,13 @@ try {
             Start-Application -QuietBrowser:$NoBrowser
             Write-Host 'Instalacion terminada. Usa el acceso directo o Bitacoras.cmd.'
         }
-        'Start' { Start-Application -QuietBrowser:$NoBrowser }
+        'Start' {
+            if (-not (Test-Path -LiteralPath (Join-Path $script:StateDirectory 'auto-update.disabled'))) {
+                Write-Host 'Buscando actualizaciones de main...'
+                $null = Update-Application -Automatic -QuietBrowser
+            }
+            Start-Application -QuietBrowser:$NoBrowser
+        }
         'Stop' { Stop-Application }
         'Status' {
             $settings = Get-Settings
@@ -296,7 +343,19 @@ try {
             else { Write-Host 'Detenida o sin respuesta. Revisa los registros en .windows/.' }
         }
         'Backup' { $null = Backup-Application }
-        'Update' { Update-Application }
+        'Update' {
+            $updated = Update-Application -QuietBrowser:$NoBrowser
+            if (-not $updated) { Start-Application -QuietBrowser:$NoBrowser }
+        }
+        'EnableAutoUpdate' {
+            $file = Join-Path $script:StateDirectory 'auto-update.disabled'
+            if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file }
+            Write-Host 'Actualizacion al abrir activada.'
+        }
+        'DisableAutoUpdate' {
+            New-Item -ItemType File -Path (Join-Path $script:StateDirectory 'auto-update.disabled') -Force | Out-Null
+            Write-Host 'Actualizacion al abrir desactivada. Puedes usar Actualizar.cmd.'
+        }
         'EnableAutostart' { New-Shortcut ([Environment]::GetFolderPath('Startup')) -Autostart; Write-Host 'Inicio automatico activado para este usuario.' }
         'DisableAutostart' {
             $shortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'Bitacoras Institucionales.lnk'
