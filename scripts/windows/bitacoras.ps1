@@ -176,7 +176,6 @@ function Start-Application {
     if (-not (Test-Path -LiteralPath $settings.buildId)) { throw 'Falta la compilacion. Ejecuta Instalar.cmd.' }
     $process = Get-OwnedProcess
     if (-not $process) {
-        Assert-FreePorts $settings
         $process = Start-Process -FilePath $script:Node -ArgumentList ('"' + $script:Runner + '" start') -WorkingDirectory $script:Root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $script:StateDirectory 'application.log') -RedirectStandardError (Join-Path $script:StateDirectory 'error.log') -PassThru
         try {
             $details = Get-CimInstance Win32_Process -Filter "ProcessId = $($process.Id)"

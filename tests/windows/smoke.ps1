@@ -51,7 +51,18 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo desactivar la actualizacion al abrir.' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action EnableAutoUpdate
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo activar la actualizacion al abrir.' }
-    Write-Host 'OK: instalacion, administrador, actualizacion al abrir, comprobacion sin reinicio, respaldo e inicio automatico.'
+    & (Join-Path $root 'ApagarPuertos.cmd') --no-pause
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudieron liberar los puertos con ApagarPuertos.cmd.' }
+    foreach ($port in @($settings.webPort, $settings.apiPort)) {
+        $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Any, $port)
+        try { $listener.Start() }
+        finally { $listener.Stop() }
+    }
+    & (Join-Path $root 'ApagarPuertos.cmd') --no-pause
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo repetir el apagado con los puertos libres.' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action Start -NoBrowser
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo reiniciar despues de liberar los puertos.' }
+    Write-Host 'OK: instalacion, administrador, actualizacion al abrir, comprobacion sin reinicio, respaldo, inicio automatico y ApagarPuertos.cmd.'
 } catch {
     foreach ($log in @('application.log', 'error.log')) {
         $file = Join-Path $root ('.windows\' + $log)

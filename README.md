@@ -47,7 +47,7 @@ Puedes instalar y usar el sistema sin escribir los comandos de los apartados sig
 
 La primera instalación necesita internet para las herramientas y las dependencias. Git permite recibir las actualizaciones de `main`; pnpm se ejecuta con la versión fijada desde la caché de npm, sin instalarlo globalmente. La instalación se realiza para el usuario actual; ejecuta `Instalar.cmd` con tu sesión habitual, sin abrirlo con otra cuenta de administrador.
 
-Para volver a usarlo, abre el acceso directo del escritorio o **`Bitacoras.cmd`**. El arranque evita duplicar una instancia y abre el navegador después de verificar la página, la API y la conexión entre ambos servicios. Los puertos de producción deben estar libres; si detecta otra aplicación en ellos, muestra el error sin detenerla. Detén primero cualquier instancia abierta con `npm run dev`.
+Para volver a usarlo, abre el acceso directo del escritorio o **`Bitacoras.cmd`**. El arranque evita duplicar una instancia y abre el navegador después de verificar la página, la API y la conexión entre ambos servicios. Al iniciar una instancia nueva, el script detiene los procesos que ocupan los puertos configurados (3100 y 4100 por defecto), incluyendo una instancia anterior de desarrollo, y reutiliza esos mismos puertos.
 
 **Al abrir Bitácoras se buscan actualizaciones en `main`.** Si hay una revisión nueva, se detiene la instancia, se respalda la configuración y los datos, se actualiza el código, se recompila y se vuelve a iniciar. Si ya tienes la revisión publicada y su compilación, el sistema arranca sin reinstalar dependencias ni reiniciar una instancia activa. Si el código ya se actualizó pero todavía hay una compilación anterior, recompila antes de abrir, para que la interfaz corresponda al código instalado. Si no hay internet o falla la comprobación previa, abre la versión instalada. La actualización también se comprueba cuando usas el inicio automático de Windows.
 
@@ -60,6 +60,7 @@ Desde una terminal en la carpeta del proyecto también puedes ejecutar:
 | `.\Bitacoras.cmd` | Iniciar en segundo plano y abrir el navegador |
 | `.\Bitacoras.cmd Status` | Consultar si los servicios responden |
 | `.\Bitacoras.cmd Stop` | Detener esta instancia y sus dos servicios |
+| `.\ApagarPuertos.cmd` | Detener los procesos de `WEB_PORT` y `API_PORT`, incluidos los iniciados en desarrollo |
 | `.\Bitacoras.cmd Backup` | Detener brevemente, respaldar datos y configuración, y reanudar si estaba iniciada |
 | `.\Bitacoras.cmd Update` o `Actualizar.cmd` | Comprobar `origin/main`, respaldar y actualizar si hay una revisión nueva |
 | `.\Bitacoras.cmd EnableAutoUpdate` | Activar la comprobación de actualizaciones al abrir, habilitada por defecto |
@@ -126,7 +127,8 @@ ADMIN_EMAIL=admin@bitacoras.local
 ADMIN_PASSWORD=Bitacoras2026!
 WEB_PORT=3100
 API_PORT=4100
-APP_ORIGIN=http://localhost:3100
+WEB_HOST=0.0.0.0
+APP_ORIGIN=http://192.168.38.250:3100
 COOKIE_SECURE=false
 ```
 
@@ -137,10 +139,11 @@ COOKIE_SECURE=false
 | `ADMIN_PASSWORD` | Contraseña inicial, entre 12 y 200 caracteres |
 | `WEB_PORT` | Puerto del frontend; por defecto 3100 |
 | `API_PORT` | Puerto del backend; por defecto 4100 |
-| `APP_ORIGIN` | Dirección del frontend; usa `http://localhost:` y su puerto |
+| `WEB_HOST` | Interfaz del frontend; `0.0.0.0` permite conexiones LAN, `127.0.0.1` limita el acceso al equipo |
+| `APP_ORIGIN` | Origen autorizado del frontend; para este servidor, `http://192.168.38.250:3100` |
 | `COOKIE_SECURE` | Mantén `false` para la instalación local con HTTP |
 | `DB_PATH` | Opcional: ruta alternativa del archivo SQLite; normalmente se deja sin definir |
-| `STRICT_PORTS` | Opcional: `1` hace que desarrollo falle si un puerto está ocupado |
+| `STRICT_PORTS` | Opcional: `1` hace que el arranque falle si un puerto está ocupado, sin detener su proceso |
 
 Las variables `ADMIN_*` se usan únicamente cuando todavía no existen usuarios. Cambiarlas después no modifica las cuentas existentes. Para cambiar una contraseña, usa **Mi cuenta** o **Usuarios → Editar usuario**.
 
@@ -152,15 +155,17 @@ Desde la raíz:
 npm run dev
 ```
 
-Abre **http://localhost:3100**. La terminal indica las direcciones elegidas:
+Abre **http://192.168.38.250:3100** desde cualquier equipo de la LAN. La terminal indica las direcciones elegidas:
 
 ```text
-Abre la aplicación en http://localhost:3100
+Abre la aplicación en http://192.168.38.250:3100
 Frontend y backend se inician juntos. Ctrl+C detiene ambos.
 API de bitácoras: http://127.0.0.1:4100
 ```
 
-Si un puerto ya está ocupado, desarrollo prueba los siguientes 19 puertos y ajusta automáticamente la conexión entre los servicios. Abre la URL que aparezca en tu terminal. Para detener ambos, presiona **Ctrl+C**.
+Tanto `npm run dev` como `npm start` liberan los puertos configurados antes de iniciar. En Linux y macOS solicitan la terminación del proceso anterior y fuerzan su cierre si no responde; en Windows terminan su árbol de procesos. No cambian a otro puerto. En Linux y macOS se necesita `lsof`; en Windows se usan PowerShell y `taskkill`. `npm run build` no detiene procesos. Para detener ambos servicios, presiona **Ctrl+C**.
+
+En Windows también puedes hacer doble clic en **`ApagarPuertos.cmd`** para liberar los puertos sin iniciar la aplicación. Lee `WEB_PORT` y `API_PORT` de `.env`, con 3100 y 4100 como valores por defecto, y funciona aunque la instancia se haya abierto con `npm run dev`. Si ya están libres, termina correctamente. Para ejecutarlo sin pausa desde una terminal usa `ApagarPuertos.cmd --no-pause`; en Linux o macOS, `node scripts/stop.mjs`. El apagado explícito libera los puertos incluso si `STRICT_PORTS=1` está configurado.
 
 No tienes que abrir dos terminales ni arrancar Next.js y Express por separado. Para volver a iniciar el sistema otro día, basta con entrar a la carpeta y ejecutar `npm run dev`.
 
@@ -173,7 +178,7 @@ Si dejaste los valores de ejemplo:
 
 Puedes personalizarlos en `.env` antes del primer inicio. La base inicial no contiene pacientes ni usuarios de prueba; solo se crea el administrador.
 
-La aplicación escucha en esta computadora (`127.0.0.1`). Usa HTTP local, sin dominio ni certificados. Esta configuración no expone el sistema a otros equipos de la red.
+El frontend escucha en `0.0.0.0:3100` y reenvía `/api/*` al backend en `127.0.0.1:4100`. El servidor de destino debe tener asignada la IP `192.168.38.250` y permitir conexiones entrantes TCP al puerto 3100 en su firewall. Usa siempre la dirección de `APP_ORIGIN` para iniciar sesión y guardar cambios; la API comprueba ese origen. En una instalación existente actualiza `WEB_HOST` y `APP_ORIGIN` en `.env`, conservando sus demás valores. Para uso exclusivamente local, configura `WEB_HOST=127.0.0.1` y `APP_ORIGIN=http://localhost:3100`.
 
 ## 4. Uso de la bitácora
 
@@ -262,7 +267,7 @@ npm run build
 npm start
 ```
 
-`npm start` también inicia ambos servicios. En este modo usa exactamente los puertos configurados; deben estar libres. Si cambias `API_PORT`, actualiza la configuración y vuelve a ejecutar `npm run build` antes de arrancar.
+`npm start` también inicia ambos servicios. En este modo libera y usa exactamente los puertos configurados. Si cambias `API_PORT`, actualiza la configuración y vuelve a ejecutar `npm run build` antes de arrancar.
 
 ## 7. Datos, respaldo y actualizaciones
 
@@ -312,7 +317,7 @@ Las migraciones se ejecutan automáticamente al iniciar el backend. Los registro
 | --- | --- |
 | `node:sqlite` no existe | Instala Node.js 22.13.0 o superior y verifica `node --version` en esa terminal |
 | `pnpm: command not found` | Instala pnpm con el comando del apartado de requisitos y abre una terminal nueva |
-| `EADDRINUSE` | Detén las instancias anteriores. En desarrollo, ejecuta el comando de la raíz y usa la URL elegida automáticamente; en modo compilado libera los puertos configurados |
+| `EADDRINUSE` | Ejecuta el comando de la raíz para liberar los puertos; comprueba permisos para detener procesos y si `STRICT_PORTS=1` está activado |
 | Next.js no puede adquirir su lock | Ya hay otra instancia del frontend en esta carpeta. Detén esa instancia antes de volver a arrancar |
 | No conecta con la API | Revisa la salida de la terminal. Ejecuta `npm run dev` desde la raíz y comprueba que ambos servicios estén activos |
 | El usuario, correo o contraseña son incorrectos | Verifica las credenciales y que la cuenta esté activa. Editar `ADMIN_PASSWORD` en `.env` no cambia una cuenta existente |
@@ -340,7 +345,7 @@ Las pruebas de API usan Express y SQLite reales, sin abrir puertos TCP. Cubren C
 Para validar la configuración y las protecciones del instalador Windows:
 
 ```powershell
-node --test tests/windows/config.test.mjs tests/windows/update.test.mjs
+node --test tests/ports.test.mjs tests/windows/config.test.mjs tests/windows/update.test.mjs
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\installer.test.ps1
 ```
 

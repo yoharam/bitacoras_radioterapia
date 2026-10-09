@@ -18,6 +18,14 @@ test('unsafe or inconsistent local configuration fails before launching services
   for (const env of [ { WEB_PORT: 'text' }, { API_PORT: '1023' }, { WEB_PORT: '65536' }, { API_PORT: '3100' }, { APP_ORIGIN: 'https://example.org' }, { COOKIE_SECURE: 'true' }, { API_URL: 'http://127.0.0.1:9999' } ]) assert.throws(() => settings(env));
 });
 
+test('LAN origin is accepted with matching ports and no extra URL components', () => {
+  assert.equal(settings({ APP_ORIGIN: 'http://192.168.38.250:3100' }).url, 'http://192.168.38.250:3100');
+  for (const origin of ['http://192.168.38.250:3200', 'http://192.168.38.250:3100/path', 'http://user:secret@192.168.38.250:3100', 'http://192.168.38.250:3100?foo=1', 'http://192.168.38.250:3100#foo', 'http://0.0.0.0:3100']) assert.throws(() => settings({ APP_ORIGIN: origin }));
+  const env = parseEnv(initialEnvironment({ name: 'Admin', email: 'admin@hospital.local', password: 'Secure password12' }));
+  assert.equal(env.WEB_HOST, '0.0.0.0');
+  assert.equal(settings(env).url, 'http://192.168.38.250:3100');
+});
+
 test('administrator values survive dotenv parsing including spaces, accents and password symbols', () => {
   for (const password of [ 'Safe #$\\ password!', "Safe'password12", 'Safe"password12', 'Safe\'and"quotes12' ]) {
     const result = parseEnv(initialEnvironment({ name: 'María López', email: 'ADMIN@hospital.local', password }));

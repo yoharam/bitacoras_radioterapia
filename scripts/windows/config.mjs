@@ -15,10 +15,9 @@ export function settings(env, root = projectRoot) {
   const webPort = port(env.WEB_PORT, 3100);
   const apiPort = port(env.API_PORT, 4100);
   if (webPort === apiPort) throw new Error('WEB_PORT y API_PORT deben ser distintos.');
-  const origin = env.APP_ORIGIN || `http://localhost:${webPort}`;
-  if (![ `http://localhost:${webPort}`, `http://127.0.0.1:${webPort}` ].includes(origin.replace(/\/$/, ''))) {
-    throw new Error('APP_ORIGIN debe coincidir con el puerto web y usar HTTP local.');
-  }
+  const origin = env.APP_ORIGIN || `http://192.168.38.250:${webPort}`;
+  const parsedOrigin = new URL(origin);
+  if (parsedOrigin.protocol !== 'http:' || Number(parsedOrigin.port || 80) !== webPort || parsedOrigin.username || parsedOrigin.password || parsedOrigin.pathname !== '/' || parsedOrigin.search || parsedOrigin.hash || ['0.0.0.0', '[::]'].includes(parsedOrigin.hostname)) throw new Error('APP_ORIGIN debe coincidir con el puerto web y usar HTTP local o LAN.');
   if (env.COOKIE_SECURE && env.COOKIE_SECURE !== 'false') throw new Error('Usa COOKIE_SECURE=false para HTTP local.');
   if (env.API_URL && env.API_URL !== `http://127.0.0.1:${apiPort}`) throw new Error('API_URL debe coincidir con API_PORT.');
   const buildDir = resolve(root, 'frontend', env.NEXT_DIST_DIR || '.next');
@@ -35,7 +34,7 @@ export function initialEnvironment({ name, email, password }) {
     if (!delimiter) throw new Error('Evita combinar los tres tipos de comillas en un mismo campo.');
     return `${delimiter}${value}${delimiter}`;
   };
-  return `ADMIN_NAME=${quote(name.trim())}\nADMIN_EMAIL=${quote(email.trim().toLowerCase())}\nADMIN_PASSWORD=${quote(password)}\nWEB_PORT=3100\nAPI_PORT=4100\nAPP_ORIGIN=http://localhost:3100\nCOOKIE_SECURE=false\n`;
+  return `ADMIN_NAME=${quote(name.trim())}\nADMIN_EMAIL=${quote(email.trim().toLowerCase())}\nADMIN_PASSWORD=${quote(password)}\nWEB_PORT=3100\nAPI_PORT=4100\nWEB_HOST=0.0.0.0\nAPP_ORIGIN=http://192.168.38.250:3100\nCOOKIE_SECURE=false\n`;
 }
 
 export async function verifyHealth({ apiPort, webPort }) {

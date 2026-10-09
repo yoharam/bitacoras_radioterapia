@@ -2,9 +2,9 @@
   "name": "bitacoras-web",
   "private": true,
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1 --port ${WEB_PORT:-3100}",
+    "dev": "next dev --hostname ${WEB_HOST:-0.0.0.0} --port ${WEB_PORT:-3100}",
     "build": "next build",
-    "start": "next start --hostname 127.0.0.1 --port ${WEB_PORT:-3100}"
+    "start": "next start --hostname ${WEB_HOST:-0.0.0.0} --port ${WEB_PORT:-3100}"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "1.1.23",
