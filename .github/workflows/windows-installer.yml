@@ -1,0 +1,49 @@
+name: Instalador Windows
+
+on:
+  push:
+    paths:
+      - 'Instalar.cmd'
+      - 'Bitacoras.cmd'
+      - 'scripts/**'
+      - 'tests/windows/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/windows-installer.yml'
+  pull_request:
+    paths:
+      - 'Instalar.cmd'
+      - 'Bitacoras.cmd'
+      - 'scripts/**'
+      - 'tests/windows/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/windows-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+      - name: Validar configuracion y protecciones del instalador
+        run: |
+          node --test tests/windows/config.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./tests/windows/installer.test.ps1 -NodePath (Get-Command node.exe).Source
+      - name: Instalar, iniciar, autenticar, respaldar y detener
+        run: '& ./tests/windows/smoke.ps1'

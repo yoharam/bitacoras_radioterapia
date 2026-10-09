@@ -34,6 +34,49 @@ En Linux, si tu instalación de Node no permite instalar paquetes globales, util
 
 ## 2. Descargar e instalar
 
+### Instalador para Windows 11
+
+Puedes instalar y usar el sistema sin escribir los comandos de los apartados siguientes:
+
+1. Descarga el repositorio desde **Code → Download ZIP** en GitHub, o clónalo con Git.
+2. Extrae el ZIP completo en una carpeta permanente de tu usuario, por ejemplo `C:\Users\TuUsuario\Bitacoras`. No ejecutes el instalador dentro del ZIP ni uses `Program Files`, carpetas de red o carpetas sincronizadas para la base local.
+3. Haz doble clic en **`Instalar.cmd`**. Si falta Node.js o es demasiado antiguo, el instalador intenta instalar Node.js LTS mediante WinGet; Windows puede pedir permiso de administrador. Si WinGet no está disponible, muestra cómo instalar Node.js y puedes volver a intentarlo.
+4. Introduce el nombre, correo y contraseña del administrador inicial. La contraseña se pide dos veces, no se muestra y debe tener entre 12 y 200 caracteres. Si ya existe `.env`, se conserva y no vuelve a pedir esos datos.
+5. El instalador descarga las dependencias con pnpm 11.22.0, compila la aplicación, crea el acceso directo **Bitácoras Institucionales** en el escritorio y ofrece iniciarla automáticamente al entrar a Windows.
+6. Espera a que se abra el navegador. Después puedes cerrar la ventana del instalador: la API y el frontend siguen en segundo plano.
+
+La primera instalación necesita internet para Node.js y las dependencias. Para la descarga ZIP y el uso diario no necesitas Git ni instalar pnpm globalmente: el instalador ejecuta la versión fijada desde la caché de npm. La instalación se realiza para el usuario actual; ejecuta `Instalar.cmd` con tu sesión habitual, sin abrirlo con otra cuenta de administrador.
+
+Para volver a usarlo, abre el acceso directo del escritorio o **`Bitacoras.cmd`**. El arranque evita duplicar una instancia y abre el navegador después de verificar la página, la API y la conexión entre ambos servicios. Los puertos de producción deben estar libres; si detecta otra aplicación en ellos, muestra el error sin detenerla. Detén primero cualquier instancia abierta con `npm run dev`.
+
+Desde una terminal en la carpeta del proyecto también puedes ejecutar:
+
+| Comando | Acción |
+| --- | --- |
+| `.\Bitacoras.cmd` | Iniciar en segundo plano y abrir el navegador |
+| `.\Bitacoras.cmd Status` | Consultar si los servicios responden |
+| `.\Bitacoras.cmd Stop` | Detener esta instancia y sus dos servicios |
+| `.\Bitacoras.cmd Backup` | Detener brevemente, respaldar datos y configuración, y reanudar si estaba iniciada |
+| `.\Bitacoras.cmd Update` | Actualizar una instalación clonada con Git, respaldar y recompilar |
+| `.\Bitacoras.cmd EnableAutostart` | Activar el arranque al iniciar sesión para el usuario actual |
+| `.\Bitacoras.cmd DisableAutostart` | Desactivar ese arranque automático |
+
+El inicio automático usa un acceso directo en la carpeta Inicio del usuario; los servicios arrancan sin abrir el navegador. Para acceder, usa el acceso directo del escritorio. Al cerrar sesión o apagar Windows, los servicios se detienen.
+
+Los registros de ejecución quedan en `.windows/application.log` y `.windows/error.log`. Los respaldos se guardan en `.windows/backups/`, con una carpeta por operación. Esta carpeta y el `.env` nuevo se protegen con permisos de Windows para el usuario actual, SYSTEM y administradores. Cada respaldo incluye `.env`, los datos SQLite y sus archivos auxiliares; contiene información privada y no debe publicarse. Si configuraste `DB_PATH`, respalda ese archivo y sus auxiliares y guarda su ruta en `backup.json`. Copia periódicamente los respaldos a otro almacenamiento protegido, pues el respaldo local no protege contra fallas del disco.
+
+Antes de reinstalar o actualizar se crea un respaldo. La actualización automática requiere Git, una rama con seguimiento remoto y una carpeta sin cambios locales; usa `git pull --ff-only` y conserva `.env` y la base. Si falla, indica el error y la ubicación del respaldo; corrige el problema y vuelve a ejecutar `Instalar.cmd`. Si descargaste un ZIP, detén el sistema, haz un respaldo y reemplaza los archivos del proyecto por los del nuevo ZIP **conservando `.env`, `backend/data/`, `.windows/` y cualquier `DB_PATH` personalizado**; después ejecuta `Instalar.cmd` otra vez. No se sobrescriben archivos locales mediante una actualización forzada.
+
+Para una instalación sin preguntas, prepara primero `.env` y ejecuta desde PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\bitacoras.ps1 -Action Install -Unattended -NoBrowser
+```
+
+Este modo conserva `.env`, crea el acceso directo del escritorio e inicia los servicios; no activa el inicio automático. La autorización que pueda pedir Windows al instalar Node.js sigue siendo necesaria. Los lanzadores usan `ExecutionPolicy Bypass` únicamente para ese proceso, sin cambiar la política del equipo; las políticas institucionales pueden requerir intervención de TI.
+
+### Instalación manual
+
 En una instalación nueva:
 
 ```bash
@@ -269,6 +312,15 @@ npm run test:e2e
 ```
 
 Las pruebas de API usan Express y SQLite reales, sin abrir puertos TCP. Cubren CRUD, validaciones, búsqueda, filtros, persistencia, migración, autenticación, usuarios, permisos por acción, revocación de sesiones y protección contra escalamiento de privilegios.
+
+Para validar la configuración y las protecciones del instalador Windows:
+
+```powershell
+node --test tests/windows/config.test.mjs
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\installer.test.ps1
+```
+
+El workflow **Instalador Windows** ejecuta estas comprobaciones en Windows PowerShell y hace una instalación real con compilación, arranque, login del administrador, respaldo, inicio automático y detención. La prueba `tests/windows/smoke.ps1` requiere un checkout desechable sin `.env` ni datos y no debe ejecutarse sobre una instalación de uso diario. Los runners de GitHub son Windows Server; la comprobación visual y los permisos institucionales deben verificarse también en el equipo Windows 11 de destino.
 
 Las pruebas de navegador comprueban radioterapia entre **320 y 1440 píxeles**, día y horarios, CSV, usuarios y cuentas limitadas. Usan una base independiente en `.playwright-data/test-3110.sqlite`, compilación separada en `.next-e2e-3110/` y puertos 3110/4110, sin interferir con la aplicación local. Estos puertos deben estar libres; puedes cambiarlos mediante `E2E_WEB_PORT` y `E2E_API_PORT`.
 
