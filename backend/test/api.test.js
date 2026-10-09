@@ -71,10 +71,18 @@ test('RFC y tipo de cirugía: captura opcional, normalización, validación, edi
   const unchanged = await request(app, `/api/records/${id}`, { method: 'PUT', cookie, body: sample });
   assert.equal(unchanged.body.record.rfc, 'LOHM900101AB1');
   assert.equal(unchanged.body.record.surgery_type, 'Hospitalizado');
-  for (const change of [{ rfc: 123 }, { rfc: null }, { rfc: 'INVALIDO' }, { rfc: 'LOHM900101AB12' }, { surgery_type: null }, { surgery_type: 1 }, { surgery_type: 'Otro' }]) {
+  for (const change of [{ rfc: 123 }, { rfc: null }, { rfc: 'RFC-INVALIDO' }, { rfc: 'LOHM900101AB123' }, { surgery_type: null }, { surgery_type: 1 }, { surgery_type: 'Otro' }]) {
     for (const [method, path] of [['POST', '/api/records'], ['PUT', `/api/records/${id}`]]) {
       assert.equal((await request(app, path, { method, cookie, body: { ...sample, ...change } })).status, 400);
     }
+  }
+  for (const rfc of ['', 'l', 'lohm900101', 'abc900101ab1', 'lohm900101ab1']) {
+    const accepted = await request(app, `/api/records/${id}`, { method: 'PUT', cookie, body: { ...sample, rfc } });
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.body.record.rfc, rfc.toUpperCase());
+    const createdShort = await request(app, '/api/records', { method: 'POST', cookie, body: { ...sample, rfc } });
+    assert.equal(createdShort.status, 201);
+    assert.equal(createdShort.body.record.rfc, rfc.toUpperCase());
   }
   const updated = await request(app, `/api/records/${id}`, { method: 'PUT', cookie, body: { ...sample, rfc: 'abc900101ab1', surgery_type: 'Ambulatorio' } });
   assert.equal(updated.status, 200);
@@ -291,7 +299,7 @@ test('audita accesos y cambios sin incluir datos personales del paciente', async
   const serialized = JSON.stringify(result.body.events);
   assert.equal(serialized.includes(sample.patient_name), false);
   assert.equal(serialized.includes('Nota sensible ficticia.'), false);
-  const person = { name: 'Consulta', email: 'consulta@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['radiotherapy.read'] };
+  const person = { name: 'Consulta', username: ('consulta@bitacoras.local').split('@')[0].toLowerCase(), email: 'consulta@bitacoras.local', password: credentials.password, is_admin: false, active: true, permissions: ['radiotherapy.read'] };
   await request(app, '/api/users', { method: 'POST', cookie, body: person });
   const session = await request(app, '/api/auth/login', { method: 'POST', body: person });
   const userCookie = [].concat(session.headers['set-cookie'])[0].split(';')[0];

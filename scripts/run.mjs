@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
+import { randomBytes } from 'node:crypto';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 if (existsSync(`${root}.env`)) loadEnvFile(`${root}.env`);
@@ -12,6 +13,7 @@ process.env.API_PORT ||= '4100';
 process.env.WEB_PORT ||= '3100';
 process.env.APP_ORIGIN ||= `http://localhost:${process.env.WEB_PORT}`;
 process.env.API_URL ||= `http://127.0.0.1:${process.env.API_PORT}`;
+process.env.INTERNAL_API_PROXY_SECRET ||= randomBytes(32).toString('hex');
 
 async function availablePort(preferred) {
   const first = Number(preferred);

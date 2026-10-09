@@ -3,7 +3,7 @@ import { openRowActions } from './helpers/row-actions.mjs';
 
 async function login(page, email = 'admin@bitacoras.local', password = 'Bitacoras2026!') {
   await page.goto('/');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill(email);
+  await page.getByLabel('Usuario o correo electrónico', { exact: true }).fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Entrar al sistema' }).click();
 }
@@ -22,7 +22,7 @@ for (const width of [320, 1440]) {
     const arrival = await page.request.post(`/api/records/${id}/arrival`, { headers: { 'X-Bitacoras-Request': '1' }, data: { arrival_time: '08:00' } });
     expect(arrival.status()).toBe(200);
     const email = `redes-${width}-${Date.now()}@bitacoras.local`, password = 'IngenieroPrueba2026!';
-    const engineer = await page.request.post('/api/users', { headers: { 'X-Bitacoras-Request': '1' }, data: { name: 'Ingeniero de prueba', email, password, active: true, is_admin: false, permissions: ['networks.read', 'networks.update'] } });
+    const engineer = await page.request.post('/api/users', { headers: { 'X-Bitacoras-Request': '1' }, data: { name: 'Ingeniero de prueba', username: email.split('@')[0], email, password, active: true, is_admin: false, permissions: ['networks.read', 'networks.update'] } });
     expect(engineer.status()).toBe(201);
     const engineerId = (await engineer.json()).user.id;
     const context = await browser.newContext({ viewport: { width, height: 1000 } });
@@ -114,7 +114,7 @@ for (const width of [320, 1440]) {
     try {
       for (const [index, name] of ['Ingeniera de prueba A', 'Ingeniero de prueba B'].entries()) {
         const email = `racha-${width}-${index}-${Date.now()}@bitacoras.local`, password = 'ReconocimientoPrueba2026!';
-        const created = await page.request.post('/api/users', { headers, data: { name, email, password, active: true, is_admin: false, permissions: ['networks.read', 'networks.update'] } });
+        const created = await page.request.post('/api/users', { headers, data: { name, username: email.split('@')[0].toLowerCase(), email, password, active: true, is_admin: false, permissions: ['networks.read', 'networks.update'] } });
         expect(created.status()).toBe(201);
         engineers.push({ id: (await created.json()).user.id, name, email, password });
       }

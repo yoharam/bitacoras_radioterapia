@@ -3,7 +3,7 @@ import { chooseRowAction } from './helpers/row-actions.mjs';
 
 async function login(page) {
   await page.goto('/');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill('admin@bitacoras.local');
+  await page.getByLabel('Usuario o correo electrónico', { exact: true }).fill('admin@bitacoras.local');
   await page.getByLabel('Contraseña', { exact: true }).fill('Bitacoras2026!');
   await page.getByRole('button', { name: 'Entrar al sistema' }).click();
 }
@@ -26,9 +26,25 @@ test('auditoría sin datos personales y bloqueo visual tras inactividad', async 
     await expect(page.getByRole('list', { name: 'Eventos recientes' })).toContainText('Inicio de sesión');
     await expect(page.getByRole('list', { name: 'Eventos recientes' })).toContainText('Llegada registrada');
     await expect(page.getByRole('list', { name: 'Eventos recientes' })).not.toContainText(patient);
+    const list = page.getByRole('list', { name: 'Eventos recientes' });
+    await expect(list).toContainText('@admin');
+    await expect(list).toContainText('IP: 127.0.0.1');
+    await page.getByLabel('Buscar persona, usuario, correo o IP').fill('127.0.0.1');
+    await page.getByLabel('Tipo de actividad').selectOption('record.arrival_recorded');
+    await expect(list).not.toContainText('Inicio de sesión');
+    await list.getByRole('button', { name: /Ver detalle: Llegada registrada/ }).first().click();
+    const detail = page.getByRole('dialog');
+    await expect(detail).toContainText('IP de origen');
+    await expect(detail).toContainText('127.0.0.1');
+    await expect(detail).toContainText('POST /api/records/');
+    await expect(detail).not.toContainText(patient);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Limpiar', exact: true }).click();
+
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.screenshot({ path: 'test-results/bitacoras-auditoria-desktop.png', fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: 'test-results/bitacoras-auditoria-movil.png', fullPage: true });
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByRole('button', { name: /^Pacientes/ }).click();

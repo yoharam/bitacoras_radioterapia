@@ -1,5 +1,10 @@
 import { createApp } from './app.js';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { loadEnvFile } from 'node:process';
+
+const envPath = fileURLToPath(new URL('../../.env', import.meta.url));
+if (existsSync(envPath)) loadEnvFile(envPath);
 
 const databasePath = process.env.DB_PATH || fileURLToPath(new URL('../data/bitacoras.sqlite', import.meta.url));
 const { app, db } = await createApp({ databasePath });

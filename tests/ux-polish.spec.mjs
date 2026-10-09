@@ -3,7 +3,7 @@ import { openRowActions } from './helpers/row-actions.mjs';
 
 async function login(page, email = 'admin@bitacoras.local', password = 'Bitacoras2026!', heading = 'Bitácora de radioterapia') {
   await page.goto('/');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill(email);
+  await page.getByLabel('Usuario o correo electrónico', { exact: true }).fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Entrar al sistema', exact: true }).click();
   await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
@@ -189,7 +189,7 @@ test('Redes conserva solicitudes durante la actualización y anima el progreso s
   expect((await page.request.post(`/api/records/${id}/arrival`, { headers, data: { arrival_time: '10:00' } })).ok()).toBe(true);
   expect((await page.request.post(`/api/records/${id}/network-assistance`, { headers })).ok()).toBe(true);
   const email = `ux-redes-${Date.now()}@bitacoras.local`, password = 'IngenieroPrueba2026!';
-  const engineer = await page.request.post('/api/users', { headers, data: { name: 'Ingeniero ficticio UX', email, password, active: true, is_admin: false, permissions: ['networks.read', 'networks.update'] } });
+  const engineer = await page.request.post('/api/users', { headers, data: { name: 'Ingeniero ficticio UX', username: email.split('@')[0], email, password, active: true, is_admin: false, permissions: ['networks.read', 'networks.update'] } });
   expect(engineer.status()).toBe(201);
   const engineerId = (await engineer.json()).user.id;
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });

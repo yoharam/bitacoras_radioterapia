@@ -4,7 +4,7 @@ import { chooseRowAction } from './helpers/row-actions.mjs';
 const password = 'UsuarioPrueba2026!';
 async function login(page, email = 'admin@bitacoras.local', pass = 'Bitacoras2026!') {
   await page.goto('/');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill(email);
+  await page.getByLabel('Usuario o correo electrónico', { exact: true }).fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(pass);
   await page.getByRole('button', { name: 'Entrar al sistema' }).click();
 }
@@ -18,9 +18,11 @@ for (const width of [320, 1440]) {
     await expect(page.getByRole('heading', { name: 'Usuarios', exact: true })).toBeVisible();
     const name = `Usuario de prueba ${width} ${Date.now()}`;
     const email = `prueba-${width}-${Date.now()}@bitacoras.local`;
+    const username = `captura.${width}.${Date.now()}`;
     await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
     await page.getByLabel('Nombre completo *', { exact: true }).fill(name);
-    await page.getByLabel('Correo electrónico *', { exact: true }).fill(email);
+    await page.getByLabel('Nombre de usuario *', { exact: true }).fill(username);
+    await page.getByLabel('Correo electrónico (opcional)', { exact: true }).fill(email);
     await page.getByLabel('Contraseña inicial *', { exact: true }).fill(password);
     await page.getByRole('group', { name: 'Bitácora de radioterapia', exact: true }).getByRole('checkbox', { name: 'Consultar', exact: true }).check();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -28,12 +30,15 @@ for (const width of [320, 1440]) {
     await page.getByRole('button', { name: 'Crear cuenta', exact: true }).click();
     const getRow = value => page.locator('tbody tr').filter({ has: page.getByRole('button', { name: value, exact: true }) });
     await expect(getRow(name)).toBeVisible();
-    await page.getByRole('combobox', { name: 'Buscar usuarios' }).fill(name);
+    await expect(getRow(name)).toContainText(`Usuario: ${username}`);
+    await page.getByRole('combobox', { name: 'Buscar usuarios' }).fill(username);
     await expect(page.getByRole('option', { name: new RegExp(name) })).toBeVisible();
     await page.getByRole('option', { name: new RegExp(name) }).click();
     await expect(page.getByRole('combobox', { name: 'Buscar usuarios' })).toHaveValue(email);
     await chooseRowAction(page, getRow(name), 'Editar usuario');
     const renamed = `${name} editado`;
+    await expect(page.getByLabel('Nombre de usuario *', { exact: true })).toHaveValue(username);
+    await page.getByLabel('Nombre de usuario *', { exact: true }).fill(`${username}.nuevo`);
     await page.getByLabel('Nombre completo *', { exact: true }).fill(renamed);
     await page.getByRole('button', { name: 'Guardar usuario', exact: true }).click();
     await expect(getRow(renamed)).toBeVisible();
@@ -45,7 +50,7 @@ for (const width of [320, 1440]) {
     const context = await browser.newContext({ viewport: { width, height: 1000 } });
     try {
       const operator = await context.newPage();
-      await login(operator, email, password);
+      await login(operator, `${username}.nuevo`, password);
       await expect(operator.getByRole('heading', { name: 'Bitácora de radioterapia' })).toBeVisible();
       await expect(operator.getByRole('button', { name: 'Registrar paciente', exact: true })).toHaveCount(0);
       await expect(operator.getByRole('button', { name: 'Exportar CSV', exact: true })).toHaveCount(0);
@@ -65,7 +70,7 @@ for (const width of [320, 1440]) {
       await operator.reload();
       await expect(operator.getByRole('heading', { name: 'Iniciar sesión', exact: true })).toBeVisible();
       await login(operator, email, password);
-      await expect(operator.getByRole('alert').filter({ hasText: 'El correo o la contraseña son incorrectos.' })).toBeVisible();
+      await expect(operator.getByRole('alert').filter({ hasText: 'El usuario, correo o contraseña son incorrectos.' })).toBeVisible();
       await chooseRowAction(page, getRow(renamed), 'Editar usuario');
       await page.getByRole('checkbox', { name: 'Usuario activo', exact: true }).check();
       await page.getByRole('group', { name: 'Bitácora de radioterapia', exact: true }).getByRole('checkbox', { name: 'Registrar', exact: true }).check();

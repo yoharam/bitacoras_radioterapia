@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 const headers = { 'X-Bitacoras-Request': '1' };
 async function login(page, email = 'admin@bitacoras.local', password = 'Bitacoras2026!') {
   await page.goto('/');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill(email);
+  await page.getByLabel('Usuario o correo electrónico', { exact: true }).fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Entrar al sistema', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Bitácora de radioterapia', exact: true })).toBeVisible();
@@ -82,7 +82,7 @@ for (const width of [320, 1440]) {
     await login(page);
     const name = `Usuario ficticio menú ${width} ${Date.now()}`;
     const email = `menu-${width}-${Date.now()}@bitacoras.local`, password = 'UsuarioPrueba2026!';
-    const created = await page.request.post('/api/users', { headers, data: { name, email, password, active: true, is_admin: false, permissions: ['users.read', 'radiotherapy.read'] } });
+    const created = await page.request.post('/api/users', { headers, data: { name, username: email.split('@')[0].toLowerCase(), email, password, active: true, is_admin: false, permissions: ['users.read', 'radiotherapy.read'] } });
     expect(created.status()).toBe(201);
     const id = (await created.json()).user.id;
     const date = await page.evaluate(() => new Date().toLocaleDateString('sv-SE'));

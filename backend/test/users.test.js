@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
 import { permissionKeys } from '../src/permissions.js';
 import { request } from './request.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const adminLogin = { email: 'admin@bitacoras.local', password: 'PruebaSegura2026!' };
-const newUser = { name: 'Usuario de prueba', email: 'prueba@bitacoras.local', password: 'UsuarioPrueba2026!', is_admin: false, active: true, permissions: ['radiotherapy.read'] };
+const newUser = { name: 'Usuario de prueba', username: ('prueba@bitacoras.local').split('@')[0].toLowerCase(), email: 'prueba@bitacoras.local', password: 'UsuarioPrueba2026!', is_admin: false, active: true, permissions: ['radiotherapy.read'] };
 const record = { patient_name: 'Paciente ficticio de permisos', date: '2026-10-08', arrival_time: '08:00', treatment_time: '08:30', status: 'Pendiente', observations: '' };
 async function login(app, body) {
   const result = await request(app, '/api/auth/login', { method: 'POST', body });
@@ -18,12 +21,85 @@ async function fixture(t) {
   return { ...result, cookie: await login(result.app, adminLogin) };
 }
 async function create(app, cookie, changes = {}) {
-  const result = await request(app, '/api/users', { cookie, method: 'POST', body: { ...newUser, ...changes } });
+  const result = await request(app, '/api/users', { cookie, method: 'POST', body: { ...newUser, username: (changes.email || newUser.email).split('@')[0].toLowerCase().slice(0, 50), ...changes } });
   assert.equal(result.status, 201, JSON.stringify(result.body));
   return result.body.user;
 }
-const editBody = (user, changes = {}) => ({ name: user.name, email: user.email, is_admin: user.is_admin, active: user.active, permissions: user.permissions, ...changes });
+const editBody = (user, changes = {}) => ({ name: user.name, username: user.username, email: user.email, is_admin: user.is_admin, active: user.active, permissions: user.permissions, ...changes });
 const cookieOptions = (cookie, method = 'GET', body) => ({ cookie, method, body });
+
+test('inicia sesión con usuario o correo, normaliza mayúsculas y permite cambiar el usuario', async t => {
+  const { app, cookie, db } = await fixture(t);
+  const user = await create(app, cookie, { username: ' Captura.Unica ' });
+  assert.equal(user.username, 'captura.unica');
+  assert.equal((await request(app, '/api/users?q=CAPTURA.UNICA', { cookie })).body.users[0].id, user.id);
+  for (const body of [{ identifier: ' CAPTURA.UNICA ', password: newUser.password }, { username: user.username, password: newUser.password }, { email: newUser.email, password: newUser.password }]) {
+    const loggedIn = await request(app, '/api/auth/login', { method: 'POST', body });
+    assert.equal(loggedIn.status, 200);
+    assert.equal(loggedIn.body.user.id, user.id);
+    assert.equal(loggedIn.body.user.username, user.username);
+  }
+  const userCookie = await login(app, { identifier: user.username, password: newUser.password });
+  assert.equal((await request(app, '/api/auth/me', { cookie: userCookie })).body.user.username, user.username);
+  const preserved = await request(app, `/api/users/${user.id}`, cookieOptions(cookie, 'PUT', editBody(user, { email: 'otro@bitacoras.local' })));
+  assert.equal(preserved.body.user.username, user.username);
+  const renamed = await request(app, `/api/users/${user.id}`, cookieOptions(cookie, 'PUT', editBody(preserved.body.user, { username: 'captura.nueva' })));
+  assert.equal(renamed.status, 200);
+  assert.equal((await request(app, '/api/auth/me', { cookie: userCookie })).body.user.username, 'captura.nueva');
+  assert.equal((await request(app, '/api/auth/login', { method: 'POST', body: { identifier: user.username, password: newUser.password } })).status, 401);
+  await login(app, { identifier: 'captura.nueva', password: newUser.password });
+  db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(user.id);
+  assert.equal((await request(app, '/api/auth/login', { method: 'POST', body: { identifier: 'captura.nueva', password: newUser.password } })).status, 401);
+});
+
+test('usuarios únicos, formato y protección de acceso con nombre de usuario', async t => {
+  const { app, cookie, db } = await fixture(t);
+  const user = await create(app, cookie, { username: 'captura' });
+  for (const username of ['Captura', ' ADMIN ']) {
+    assert.equal((await request(app, '/api/users', cookieOptions(cookie, 'POST', { ...newUser, email: 'otra@bitacoras.local', username }))).status, 409);
+  }
+  assert.equal((await request(app, `/api/users/${user.id}`, cookieOptions(cookie, 'PUT', editBody(user, { username: 'ADMIN' })))).status, 409);
+  for (const username of ['', 'ab', 'a'.repeat(51), 'correo@dominio.local', 'dos palabras', 'ácceso', '-inicio', null, 42]) {
+    assert.equal((await request(app, '/api/users', cookieOptions(cookie, 'POST', { ...newUser, email: 'otra@bitacoras.local', username }))).status, 400);
+    assert.equal((await request(app, `/api/users/${user.id}`, cookieOptions(cookie, 'PUT', editBody(user, { username })))).status, 400);
+  }
+  assert.throws(() => db.prepare('UPDATE users SET username = ? WHERE id = ?').run('ADMIN', user.id), /UNIQUE/);
+  for (const identifier of ['', ' ', null, {}, 'a'.repeat(201)]) {
+    assert.equal((await request(app, '/api/auth/login', { method: 'POST', body: { identifier, password: newUser.password } })).status, 400);
+  }
+  for (let attempt = 0; attempt < 5; attempt++) {
+    assert.equal((await request(app, '/api/auth/login', { method: 'POST', body: { identifier: 'captura', password: 'Incorrecta2026!' } })).status, 401);
+  }
+  assert.equal((await request(app, '/api/auth/login', { method: 'POST', body: { identifier: 'captura', password: newUser.password } })).status, 429);
+});
+
+test('migra los usuarios existentes sin duplicados ni pérdida de contraseñas, permisos o sesiones', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bitacoras-username-'));
+  const databasePath = join(directory, 'test.sqlite');
+  let db;
+  try {
+    let result = await createApp({ databasePath, adminPassword: adminLogin.password });
+    db = result.db;
+    const cookie = await login(result.app, adminLogin);
+    const first = await create(result.app, cookie, { email: 'captura@primero.local' });
+    const second = await create(result.app, cookie, { email: 'captura@segundo.local', username: 'captura-2' });
+    const hashes = db.prepare('SELECT id, password_hash FROM users ORDER BY id').all();
+    db.exec('DROP INDEX users_username_idx; ALTER TABLE users DROP COLUMN username;');
+    db.close(); db = undefined;
+    for (let iteration = 0; iteration < 2; iteration++) {
+      result = await createApp({ databasePath }); db = result.db;
+      assert.deepEqual(db.prepare('SELECT id, password_hash FROM users ORDER BY id').all(), hashes);
+      assert.equal(db.prepare('SELECT username FROM users WHERE id = ?').get(first.id).username, 'captura');
+      assert.equal(db.prepare('SELECT username FROM users WHERE id = ?').get(second.id).username, 'captura-2');
+      assert.equal((await request(result.app, '/api/auth/me', { cookie })).body.user.username, 'admin');
+      const loggedIn = await request(result.app, '/api/auth/login', { method: 'POST', body: { identifier: 'captura-2', password: newUser.password } });
+      assert.equal(loggedIn.status, 200);
+      assert.equal(loggedIn.body.user.id, second.id);
+      assert.deepEqual(loggedIn.body.user.permissions, ['radiotherapy.read']);
+      db.close(); db = undefined;
+    }
+  } finally { db?.close(); rmSync(directory, { recursive: true, force: true }); }
+});
 
 test('usuarios: CRUD, correo único, búsqueda, paginación y respuestas sin secretos', async t => {
   const { app, cookie, db } = await fixture(t);
@@ -41,7 +117,7 @@ test('usuarios: CRUD, correo único, búsqueda, paginación y respuestas sin sec
   assert.equal((await request(app, '/api/users?page=2&limit=1', { cookie })).body.users.length, 1);
   assert.equal((await request(app, `/api/users/${user.id}`, { cookie })).body.user.password_hash, undefined);
   assert.equal((await request(app, '/api/users', cookieOptions(cookie, 'POST', { ...newUser, email: newUser.email.toUpperCase() }))).status, 409);
-  const update = await request(app, `/api/users/${user.id}`, cookieOptions(cookie, 'PUT', editBody(user, { name: 'María de prueba', email: 'editado@bitacoras.local', permissions: ['radiotherapy.read', 'radiotherapy.create'] })));
+  const update = await request(app, `/api/users/${user.id}`, cookieOptions(cookie, 'PUT', editBody(user, { name: 'María de prueba', username: ('editado@bitacoras.local').split('@')[0].toLowerCase(), email: 'editado@bitacoras.local', permissions: ['radiotherapy.read', 'radiotherapy.create'] })));
   assert.equal(update.status, 200);
   assert.equal(update.body.user.name, 'María de prueba');
   assert.deepEqual(update.body.user.permissions, ['radiotherapy.create', 'radiotherapy.read']);

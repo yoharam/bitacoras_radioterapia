@@ -9,7 +9,7 @@ test('períodos, rango inclusivo, búsqueda predictiva y reporte de todas las p�
   await context.addInitScript(() => { window.print = () => { window.printRequested = true; }; });
   await page.clock.install({ time: new Date('2026-10-08T12:00:00') });
   await page.goto('/');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill('admin@bitacoras.local');
+  await page.getByLabel('Usuario o correo electrónico', { exact: true }).fill('admin@bitacoras.local');
   await page.getByLabel('Contraseña', { exact: true }).fill('Bitacoras2026!');
   await page.getByRole('button', { name: 'Entrar al sistema' }).click();
   await expect(page.getByRole('heading', { name: 'Bitácora de radioterapia' })).toBeVisible();

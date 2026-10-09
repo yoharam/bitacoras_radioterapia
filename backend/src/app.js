@@ -6,6 +6,9 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { modules, permissionKeys, can, validatePermissions } from './permissions.js';
 import { ENTITLEMENT_TYPES } from '../../shared/entitlement-types.mjs';
+import { createPersonnelService } from './personnel.js';
+import { usernameBase, uniqueUsername } from './username.js';
+import { clientIp } from '../../shared/proxy-security.mjs';
 
 const derive = promisify(scrypt);
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -15,6 +18,14 @@ const priorities = ['Normal', 'Alta', 'Urgente'];
 const surgeryTypes = ['Hospitalizado', 'Ambulatorio'];
 const sessionDuration = 8 * 60 * 60 * 1000;
 const idleSessionDuration = 5 * 60 * 1000;
+
+function availableUsername(db, email) {
+  let base = normalize((email || 'usuario').split('@')[0]).replace(/[^a-z0-9._-]/g, '').replace(/^[^a-z0-9]+/, '').slice(0, 40);
+  if (base.length < 3) base = base ? `${base}-usuario` : 'usuario';
+  let username = base, suffix = 2;
+  while (db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(username)) username = `${base}-${suffix++}`;
+  return username;
+}
 
 export async function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
@@ -48,7 +59,7 @@ function validateRecord(body, existing = {}) {
   const rawRfc = body.rfc === undefined ? existing.rfc ?? '' : body.rfc;
   if (typeof rawRfc !== 'string') throw Object.assign(new Error('El RFC debe ser texto.'), { status: 400 });
   const rfc = rawRfc.trim().toUpperCase();
-  if (rfc && !/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)) throw Object.assign(new Error('Escribe un RFC válido de 12 o 13 caracteres, con homoclave.'), { status: 400 });
+  if (rfc && !/^[A-ZÑ&0-9]{1,13}$/.test(rfc)) throw Object.assign(new Error('El RFC es opcional y acepta hasta 13 caracteres: letras y números, con o sin homoclave.'), { status: 400 });
   const surgery_type = body.surgery_type === undefined ? existing.surgery_type ?? '' : body.surgery_type;
   if (surgery_type !== '' && !surgeryTypes.includes(surgery_type)) throw Object.assign(new Error('Selecciona Hospitalizado o Ambulatorio como tipo de cirugía.'), { status: 400 });
   const rawEntitlement = body.entitlement_type === undefined ? existing.entitlement_type ?? '' : body.entitlement_type;
@@ -56,7 +67,7 @@ function validateRecord(body, existing = {}) {
   return { ...record, date: body.date, status, rfc, surgery_type, entitlement_type: rawEntitlement || null };
 }
 
-export async function createApp({ databasePath, adminEmail = process.env.ADMIN_EMAIL || 'admin@bitacoras.local', adminPassword = process.env.ADMIN_PASSWORD, adminName = process.env.ADMIN_NAME || 'Administrador', origin = process.env.APP_ORIGIN || 'http://localhost:3100', secureCookies = process.env.COOKIE_SECURE === 'true' } = {}) {
+export async function createApp({ databasePath, adminEmail = process.env.ADMIN_EMAIL || 'admin@bitacoras.local', adminPassword = process.env.ADMIN_PASSWORD, adminName = process.env.ADMIN_NAME || 'Administrador', origin = process.env.APP_ORIGIN || 'http://localhost:3100', secureCookies = process.env.COOKIE_SECURE === 'true', personnelService = createPersonnelService(), proxySecret = process.env.INTERNAL_API_PROXY_SECRET } = {}) {
   if (!databasePath) throw new Error('Se requiere una ruta de base de datos.');
   if (databasePath !== ':memory:') mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(databasePath);
@@ -65,7 +76,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
-    CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE, password_hash TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS user_permissions (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, permission TEXT NOT NULL, PRIMARY KEY(user_id, permission));
     CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL, idle_expires_at INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS records (
@@ -101,6 +112,8 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
   `);
   // Migración aditiva: conserva íntegros los registros anteriores y sus sesiones.
   const existingColumns = new Set(db.prepare('PRAGMA table_info(records)').all().map(column => column.name));
+  // Desactivar fuera de la transacción evita cascadas al reconstruir solo users.
+  db.exec('PRAGMA foreign_keys = OFF');
   db.exec('BEGIN');
   try {
     db.exec('CREATE TABLE IF NOT EXISTS entitlement_types (code TEXT PRIMARY KEY, name TEXT NOT NULL)');
@@ -111,6 +124,14 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
       if (!existingColumns.has(column)) db.exec(`ALTER TABLE records ADD COLUMN ${column} TEXT`);
     }
     if (!existingColumns.has('arrived_at')) db.exec("UPDATE records SET arrived_at = updated_at WHERE arrival_time IS NOT NULL AND arrival_time != ''");
+    const auditColumns = new Set(db.prepare('PRAGMA table_info(audit_events)').all().map(column => column.name));
+    for (const column of ['actor_username', 'actor_email', 'ip_address', 'request_method', 'request_path']) {
+      if (!auditColumns.has(column)) db.exec(`ALTER TABLE audit_events ADD COLUMN ${column} TEXT`);
+    }
+    if (!auditColumns.has('actor_user_id')) {
+      db.exec('ALTER TABLE audit_events ADD COLUMN actor_user_id INTEGER');
+      db.exec('UPDATE audit_events SET actor_user_id = actor_id');
+    }
     const sessionColumns = new Set(db.prepare('PRAGMA table_info(sessions)').all().map(column => column.name));
     if (!sessionColumns.has('idle_expires_at')) db.exec('ALTER TABLE sessions ADD COLUMN idle_expires_at INTEGER NOT NULL DEFAULT 0');
     db.exec('UPDATE sessions SET idle_expires_at = expires_at WHERE idle_expires_at = 0');
@@ -123,29 +144,53 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
       db.exec('UPDATE users SET is_admin = 1');
     }
     if (!userColumns.has('active')) db.exec('ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1');
+    if (!userColumns.has('username')) db.exec('ALTER TABLE users ADD COLUMN username TEXT COLLATE NOCASE');
+    if (!userColumns.has('employee_number')) db.exec('ALTER TABLE users ADD COLUMN employee_number TEXT');
+    for (const user of db.prepare("SELECT id, email FROM users WHERE username IS NULL OR username = '' ORDER BY id").all()) {
+      db.prepare('UPDATE users SET username = ? WHERE id = ?').run(availableUsername(db, user.email), user.id);
+    }
+    if (db.prepare('PRAGMA table_info(users)').all().find(column => column.name === 'email').notnull) {
+      db.exec(`CREATE TABLE users_optional_email (
+        id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE, password_hash TEXT NOT NULL,
+        is_admin INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1,
+        username TEXT COLLATE NOCASE, employee_number TEXT
+      );
+      INSERT INTO users_optional_email (id, name, email, password_hash, is_admin, active, username, employee_number)
+        SELECT id, name, NULLIF(email, ''), password_hash, is_admin, active, username, employee_number FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_optional_email RENAME TO users;`);
+      if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('La migración de usuarios no pasó la verificación de relaciones.');
+    }
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users(username COLLATE NOCASE)');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_employee_number_idx ON users(employee_number)');
     db.exec('CREATE INDEX IF NOT EXISTS records_treatment_idx ON records(date, treatment_time)');
     db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
   db.function('normalize', { deterministic: true }, normalize);
   if (!db.prepare('SELECT id FROM users LIMIT 1').get()) {
     const password = adminPassword || (process.env.NODE_ENV === 'production' ? '' : 'Bitacoras2026!');
     if (password.length < 12) { db.close(); throw new Error('Configura ADMIN_PASSWORD con al menos 12 caracteres para crear el administrador.'); }
-    db.prepare('INSERT INTO users (name, email, password_hash, is_admin) VALUES (?, ?, ?, 1)').run(adminName, adminEmail.trim().toLowerCase(), await hashPassword(password));
+    db.prepare('INSERT INTO users (name, email, username, password_hash, is_admin) VALUES (?, ?, ?, ?, 1)').run(adminName, adminEmail.trim().toLowerCase(), availableUsername(db, adminEmail), await hashPassword(password));
   }
   const dummyHash = await hashPassword(randomBytes(24).toString('hex'));
   const app = express();
   const attempts = new Map();
   app.disable('x-powered-by');
+  app.set('trust proxy', false);
   app.use((req, res, next) => {
+    req.clientIp = clientIp(req, proxySecret);
     res.set('Cache-Control', 'no-store');
     res.set('X-Content-Type-Options', 'nosniff');
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && (req.get('X-Bitacoras-Request') !== '1' || (req.get('Origin') && req.get('Origin') !== origin))) return res.status(403).json({ message: 'La solicitud no tiene un origen autorizado.' });
     next();
   });
   app.use(express.json({ limit: '32kb' }));
-  function writeAudit(actor, action, entity, entityId = null, details = {}) {
-    db.prepare('INSERT INTO audit_events (actor_id, actor_name, action, entity, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(actor?.id ?? null, actor?.name ?? 'Anónimo', action, entity, entityId == null ? null : String(entityId), JSON.stringify(details), new Date().toISOString());
+  function writeAudit(req, actor, action, entity, entityId = null, details = {}) {
+    db.prepare(`INSERT INTO audit_events (actor_id, actor_user_id, actor_name, actor_username, actor_email, ip_address, request_method, request_path, action, entity, entity_id, details, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(actor?.id ?? null, actor?.id ?? null, actor?.name ?? 'Sin sesión autenticada', actor?.username ?? null, actor?.email ?? null,
+        req.clientIp ?? null, req.method, req.originalUrl.split('?')[0], action, entity, entityId == null ? null : String(entityId), JSON.stringify(details), new Date().toISOString());
   }
   function auth(req, res, next) {
     const cookie = (req.headers.cookie || '').split(';').map(item => item.trim()).find(item => item.startsWith('bitacoras_session='));
@@ -153,7 +198,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     if (!token || !/^[a-f0-9]{64}$/.test(token)) return res.status(401).json({ message: 'Inicia sesión para continuar.' });
     const now = Date.now();
     const tokenHash = digest(token);
-    const session = db.prepare('SELECT users.id, users.name, users.email, users.is_admin, users.active FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ? AND idle_expires_at > ? AND users.active = 1').get(tokenHash, now, now);
+    const session = db.prepare('SELECT users.id, users.name, users.email, users.username, users.employee_number, users.is_admin, users.active FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ? AND idle_expires_at > ? AND users.active = 1').get(tokenHash, now, now);
     if (!session) return res.status(401).json({ message: 'Tu sesión terminó por inactividad o vencimiento. Vuelve a iniciar sesión.' });
     db.prepare('UPDATE sessions SET idle_expires_at = ? WHERE token_hash = ?').run(now + idleSessionDuration, tokenHash);
     req.user = publicUser(session);
@@ -161,37 +206,43 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     next();
   }
   function publicUser(user) {
-    return { id: user.id, name: user.name, email: user.email, is_admin: Boolean(user.is_admin), active: Boolean(user.active), permissions: user.is_admin ? [...permissionKeys] : db.prepare('SELECT permission FROM user_permissions WHERE user_id = ? ORDER BY permission').all(user.id).map(row => row.permission) };
+    return { id: user.id, name: user.name, email: user.email, username: user.username, employee_number: user.employee_number, is_admin: Boolean(user.is_admin), active: Boolean(user.active), permissions: user.is_admin ? [...permissionKeys] : db.prepare('SELECT permission FROM user_permissions WHERE user_id = ? ORDER BY permission').all(user.id).map(row => row.permission) };
   }
   const requirePermission = permission => (req, res, next) => {
-    if (!can(req.user, permission)) return res.status(403).json({ message: 'No tienes permiso para realizar esta acción.' });
+    if (!can(req.user, permission)) {
+      writeAudit(req, req.user, 'security.permission_denied', 'security', null, { permission });
+      return res.status(403).json({ message: 'No tienes permiso para realizar esta acción.' });
+    }
     next();
   };
   const cookieOptions = { httpOnly: true, sameSite: 'lax', secure: secureCookies, path: '/' };
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   app.post('/api/auth/login', async (req, res) => {
-    const { email, password } = req.body || {};
-    if (typeof email !== 'string' || email.length > 200 || typeof password !== 'string' || password.length > 200) return res.status(400).json({ message: 'Escribe tu correo y contraseña.' });
+    const body = req.body || {};
+    const identifier = body.identifier ?? body.username ?? body.email;
+    const { password } = body;
+    if (typeof identifier !== 'string' || !identifier.trim() || identifier.length > 200 || typeof password !== 'string' || !password || password.length > 200) return res.status(400).json({ message: 'Escribe tu nombre de usuario o correo y tu contraseña.' });
     const now = Date.now();
     for (const [key, value] of attempts) if (value.expires <= now) attempts.delete(key);
-    const key = req.ip;
+    const key = req.clientIp || req.ip;
     const count = attempts.get(key) || { failures: 0, expires: now + 15 * 60 * 1000 };
-    if (count.failures >= 5) { writeAudit(null, 'auth.login_blocked', 'auth', null, { reason: 'rate_limited' }); return res.status(429).json({ message: 'Demasiados intentos. Inténtalo de nuevo en 15 minutos.' }); }
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
+    if (count.failures >= 5) { writeAudit(req, null, 'auth.login_blocked', 'auth', null, { reason: 'rate_limited' }); return res.status(429).json({ message: 'Demasiados intentos. Inténtalo de nuevo en 15 minutos.' }); }
+    const login = identifier.trim().toLowerCase();
+    const user = db.prepare(login.includes('@') ? 'SELECT * FROM users WHERE email = ?' : 'SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(login);
     const valid = await verifyPassword(password, user?.password_hash || dummyHash);
-    if (!user || !valid || !user.active) { count.failures++; attempts.set(key, count); writeAudit(null, 'auth.login_failed', 'auth', null, { reason: 'invalid_credentials' }); return res.status(401).json({ message: 'El correo o la contraseña son incorrectos.' }); }
+    if (!user || !valid || !user.active) { count.failures++; attempts.set(key, count); writeAudit(req, null, 'auth.login_failed', 'auth', null, { reason: 'invalid_credentials', attempted_identifier: identifier.trim() }); return res.status(401).json({ message: 'El usuario, correo o contraseña son incorrectos.' }); }
     attempts.delete(key);
     db.prepare('DELETE FROM sessions WHERE expires_at <= ? OR idle_expires_at <= ?').run(now, now);
     const token = randomBytes(32).toString('hex');
     db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, idle_expires_at) VALUES (?, ?, ?, ?)').run(digest(token), user.id, now + sessionDuration, now + idleSessionDuration);
-    writeAudit(user, 'auth.login_succeeded', 'auth');
+    writeAudit(req, user, 'auth.login_succeeded', 'auth');
     res.cookie('bitacoras_session', token, { ...cookieOptions, maxAge: sessionDuration });
     res.json({ user: publicUser(user) });
   });
   app.get('/api/auth/me', auth, (req, res) => res.json({ user: req.user }));
   app.post('/api/auth/activity', auth, (_req, res) => res.status(204).end());
   app.post('/api/auth/logout', auth, (req, res) => {
-    writeAudit(req.user, 'auth.logout', 'auth');
+    writeAudit(req, req.user, 'auth.logout', 'auth');
     db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.sessionHash);
     res.clearCookie('bitacoras_session', cookieOptions).json({ message: 'Sesión cerrada.' });
   });
@@ -207,17 +258,29 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
       db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(req.user.id, req.sessionHash);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
-    writeAudit(req.user, 'auth.password_changed', 'user', req.user.id);
+    writeAudit(req, req.user, 'auth.password_changed', 'user', req.user.id);
     res.json({ message: 'Contraseña actualizada.' });
   });
   app.get('/api/audit', auth, (req, res) => {
-    if (!req.user.is_admin) return res.status(403).json({ message: 'La auditoría está disponible solo para administradores.' });
-    const { page = '1', limit = '20' } = req.query;
-    if ([page, limit].some(value => typeof value !== 'string') || !/^[0-9]+$/.test(page) || !/^[0-9]+$/.test(limit) || Number(page) < 1 || Number(page) > 100000 || Number(limit) < 1 || Number(limit) > 100) return res.status(400).json({ message: 'Revisa la página y el límite de auditoría.' });
-    const total = db.prepare('SELECT COUNT(*) AS total FROM audit_events').get().total;
-    const events = db.prepare('SELECT id, actor_id, actor_name, action, entity, entity_id, details, created_at FROM audit_events ORDER BY id DESC LIMIT ? OFFSET ?').all(Number(limit), (Number(page) - 1) * Number(limit)).map(event => ({ ...event, details: JSON.parse(event.details) }));
-    res.json({ events, total, page: Number(page), pages: Math.max(1, Math.ceil(total / Number(limit))) });
+    if (!req.user.is_admin) {
+      writeAudit(req, req.user, 'security.permission_denied', 'security', null, { permission: 'audit.read' });
+      return res.status(403).json({ message: 'La auditoría está disponible solo para administradores.' });
+    }
+    const { page = '1', limit = '20', q = '', action = '' } = req.query;
+    if ([page, limit, q, action].some(value => typeof value !== 'string') || !/^[0-9]+$/.test(page) || !/^[0-9]+$/.test(limit) || Number(page) < 1 || Number(page) > 100000 || Number(limit) < 1 || Number(limit) > 100 || q.length > 200 || (action && !/^[a-z_]+\.[a-z_]+$/.test(action))) return res.status(400).json({ message: 'Revisa los filtros, la página y el límite de auditoría.' });
+    const conditions = [], params = [];
+    if (q.trim()) {
+      conditions.push("instr(normalize(COALESCE(actor_name,'') || ' ' || COALESCE(actor_username,'') || ' ' || COALESCE(actor_email,'') || ' ' || COALESCE(ip_address,'')), ?) > 0");
+      params.push(normalize(q.trim()));
+    }
+    if (action) { conditions.push('action = ?'); params.push(action); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const total = db.prepare(`SELECT COUNT(*) AS total FROM audit_events ${where}`).get(...params).total;
+    const events = db.prepare(`SELECT id, actor_id, actor_user_id, actor_name, actor_username, actor_email, ip_address, request_method, request_path, action, entity, entity_id, details, created_at FROM audit_events ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, Number(limit), (Number(page) - 1) * Number(limit)).map(event => ({ ...event, details: JSON.parse(event.details) }));
+    const actions = db.prepare('SELECT DISTINCT action FROM audit_events ORDER BY action').all().map(row => row.action);
+    res.json({ events, actions, total, page: Number(page), pages: Math.max(1, Math.ceil(total / Number(limit))) });
   });
+
   app.get('/api/permissions', auth, (_req, res) => res.json({ modules }));
   app.use('/api/users', auth);
   const findUser = (req, res, next) => {
@@ -228,15 +291,25 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
   };
   function validateUser(body, actor, target) {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
-    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    const rawEmail = body.email === undefined ? target?.email ?? null : body.email;
+    if (rawEmail != null && typeof rawEmail !== 'string') throw Object.assign(new Error('El correo electrónico es opcional; si lo capturas debe ser texto.'), { status: 400 });
+    const email = rawEmail?.trim().toLowerCase() || null;
     if (name.length < 2 || name.length > 100) throw Object.assign(new Error('El nombre debe tener entre 2 y 100 caracteres.'), { status: 400 });
-    if (email.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Object.assign(new Error('Escribe un correo electrónico válido.'), { status: 400 });
+    if (email && (email.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) throw Object.assign(new Error('El correo electrónico es opcional; si lo capturas escribe un correo válido.'), { status: 400 });
+    const rawUsername = body.username === undefined ? target?.username : body.username;
+    const username = typeof rawUsername === 'string' ? rawUsername.trim().toLowerCase() : '';
+    if (!/^[a-z0-9][a-z0-9._-]{2,49}$/.test(username)) throw Object.assign(new Error('El nombre de usuario debe tener entre 3 y 50 caracteres: letras sin acentos, números, punto, guion o guion bajo; comienza con una letra o número.'), { status: 400 });
+    const username_auto = body.username_auto === true && !target;
+    const username_base = username_auto ? body.username_base ?? username : username;
+    if (typeof username_base !== 'string' || !/^[a-z0-9][a-z0-9._-]{2,49}$/.test(username_base)) throw Object.assign(new Error('La sugerencia de nombre de usuario no es válida.'), { status: 400 });
+    const employee_number = body.employee_number === undefined ? target?.employee_number ?? null : body.employee_number || null;
+    if (employee_number !== null && (typeof employee_number !== 'string' || !/^[A-Za-z0-9-]{1,20}$/.test(employee_number))) throw Object.assign(new Error('Selecciona una persona del catálogo institucional.'), { status: 400 });
     if (typeof body.is_admin !== 'boolean' || typeof body.active !== 'boolean') throw Object.assign(new Error('Selecciona el perfil y el estado del usuario.'), { status: 400 });
     const permissions = validatePermissions(body.permissions);
     if (!actor.is_admin && (body.is_admin || target?.is_admin || permissions.some(permission => !can(actor, permission)))) throw Object.assign(new Error('Solo puedes asignar los permisos que tienes. Los administradores son gestionados por otro administrador.'), { status: 403 });
     const password = body.password ?? '';
     if (typeof password !== 'string' || (!target && !password) || (password && (password.length < 12 || password.length > 200))) throw Object.assign(new Error('La contraseña debe tener entre 12 y 200 caracteres.'), { status: 400 });
-    return { name, email, is_admin: body.is_admin, active: body.active, permissions, password };
+    return { name, email, username, username_auto, username_base, employee_number, is_admin: body.is_admin, active: body.active, permissions, password };
   }
   function protectAccount(actor, target, values) {
     if (actor.id === target.id && (!values.active || values.is_admin !== Boolean(target.is_admin) || (!target.is_admin && JSON.stringify([...values.permissions].sort()) !== JSON.stringify([...actor.permissions].sort())))) throw Object.assign(new Error('No puedes desactivar tu cuenta ni cambiar tus propios permisos.'), { status: 409 });
@@ -248,44 +321,75 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     for (const permission of permissions) insert.run(id, permission);
   }
   function ensureUniqueEmail(email, id = 0) {
+    if (!email) return;
     if (db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(email, id)) throw Object.assign(new Error('Este correo electrónico ya está registrado.'), { status: 409 });
   }
+  function ensureUniqueUsername(username, id = 0) {
+    if (db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?').get(username, id)) throw Object.assign(new Error('Este nombre de usuario ya está registrado.'), { status: 409 });
+  }
+  function ensureUniqueEmployee(number, id = 0) {
+    if (number && db.prepare('SELECT id FROM users WHERE employee_number = ? AND id != ?').get(number, id)) throw Object.assign(new Error('Esta persona ya tiene una cuenta registrada. Consulta o edita su usuario existente.'), { status: 409 });
+  }
+  app.get('/api/users/username-suggestion', requirePermission('users.create'), (req, res) => {
+    const { name = '', given_names = '', surnames = '' } = req.query;
+    if ([name, given_names, surnames].some(value => typeof value !== 'string' || value.length > 100) || name.trim().length < 2) return res.status(400).json({ message: 'Escribe el nombre completo para sugerir un usuario.' });
+    const base = usernameBase(name, given_names, surnames);
+    res.json({ base, username: uniqueUsername(db, base) });
+  });
+  app.get('/api/users/personnel', requirePermission('users.create'), async (req, res) => {
+    const { q = '' } = req.query;
+    if (typeof q !== 'string' || q.trim().length < 2 || q.length > 120) return res.status(400).json({ message: 'Escribe al menos dos caracteres del nombre o número de empleado.' });
+    const people = await personnelService.search(q.trim());
+    res.json({ people: people.map(person => {
+      const base = usernameBase(person.name, person.given_names, person.surnames);
+      return { ...person, username_base: base, username: uniqueUsername(db, base), registered: Boolean(db.prepare('SELECT id FROM users WHERE employee_number = ?').get(person.employee_number)) };
+    }) });
+  });
   app.get('/api/users', requirePermission('users.read'), (req, res) => {
     const { q = '', page = '1', limit = '8' } = req.query;
     if ([q, page, limit].some(value => typeof value !== 'string') || q.length > 200 || !/^\d+$/.test(page) || Number(page) < 1 || Number(page) > 100000 || !/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100) return res.status(400).json({ message: 'Revisa los filtros de usuarios.' });
     const search = normalize(q.trim());
-    const where = "WHERE instr(normalize(name || ' ' || email), ?) > 0";
+    const where = "WHERE instr(normalize(name || ' ' || COALESCE(email, '') || ' ' || username || ' ' || COALESCE(employee_number, '')), ?) > 0";
     const total = db.prepare(`SELECT COUNT(*) AS total FROM users ${where}`).get(search).total;
-    const users = db.prepare(`SELECT id, name, email, is_admin, active FROM users ${where} ORDER BY is_admin DESC, name, id LIMIT ? OFFSET ?`).all(search, Number(limit), (Number(page) - 1) * Number(limit)).map(publicUser);
+    const users = db.prepare(`SELECT id, name, email, username, employee_number, is_admin, active FROM users ${where} ORDER BY is_admin DESC, name, id LIMIT ? OFFSET ?`).all(search, Number(limit), (Number(page) - 1) * Number(limit)).map(publicUser);
     res.json({ users, total, pages: Math.max(1, Math.ceil(total / Number(limit))) });
   });
   app.get('/api/users/:id', requirePermission('users.read'), findUser, (req, res) => res.json({ user: publicUser(req.targetUser) }));
   app.post('/api/users', requirePermission('users.create'), async (req, res) => {
     const values = validateUser(req.body || {}, req.user);
+    ensureUniqueEmployee(values.employee_number);
+    if (values.employee_number) await personnelService.find(values.employee_number);
     const passwordHash = await hashPassword(values.password);
     ensureUniqueEmail(values.email);
+    ensureUniqueEmployee(values.employee_number);
+    if (values.username_auto) values.username = uniqueUsername(db, values.username_base);
+    ensureUniqueUsername(values.username);
     db.exec('BEGIN');
     try {
-      const result = db.prepare('INSERT INTO users (name, email, password_hash, is_admin, active) VALUES (?, ?, ?, ?, ?)').run(values.name, values.email, passwordHash, Number(values.is_admin), Number(values.active));
+      const result = db.prepare('INSERT INTO users (name, email, username, employee_number, password_hash, is_admin, active) VALUES (?, ?, ?, ?, ?, ?, ?)').run(values.name, values.email, values.username, values.employee_number, passwordHash, Number(values.is_admin), Number(values.active));
       const id = Number(result.lastInsertRowid);
       savePermissions(id, values.is_admin ? [] : values.permissions);
       db.exec('COMMIT');
-      writeAudit(req.user, 'user.created', 'user', id);
+      writeAudit(req, req.user, 'user.created', 'user', id);
       res.status(201).json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)) });
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   });
   app.put('/api/users/:id', requirePermission('users.update'), findUser, async (req, res) => {
     const values = validateUser(req.body || {}, req.user, req.targetUser);
+    ensureUniqueEmployee(values.employee_number, req.targetUser.id);
+    if (values.employee_number && values.employee_number !== req.targetUser.employee_number) await personnelService.find(values.employee_number);
     const passwordHash = values.password ? await hashPassword(values.password) : req.targetUser.password_hash;
     protectAccount(req.user, req.targetUser, values);
     ensureUniqueEmail(values.email, req.targetUser.id);
+    ensureUniqueUsername(values.username, req.targetUser.id);
+    ensureUniqueEmployee(values.employee_number, req.targetUser.id);
     db.exec('BEGIN');
     try {
-      db.prepare('UPDATE users SET name = ?, email = ?, password_hash = ?, is_admin = ?, active = ? WHERE id = ?').run(values.name, values.email, passwordHash, Number(values.is_admin), Number(values.active), req.targetUser.id);
+      db.prepare('UPDATE users SET name = ?, email = ?, username = ?, employee_number = ?, password_hash = ?, is_admin = ?, active = ? WHERE id = ?').run(values.name, values.email, values.username, values.employee_number, passwordHash, Number(values.is_admin), Number(values.active), req.targetUser.id);
       savePermissions(req.targetUser.id, values.is_admin ? [] : values.permissions);
       if (!values.active || values.password) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.targetUser.id);
       db.exec('COMMIT');
-      writeAudit(req.user, 'user.updated', 'user', req.targetUser.id);
+      writeAudit(req, req.user, 'user.updated', 'user', req.targetUser.id);
       res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.targetUser.id)) });
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   });
@@ -294,7 +398,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     protectAccount(req.user, req.targetUser, { active: false, is_admin: false, permissions: [] });
     if (db.prepare('SELECT id FROM records WHERE created_by = ? LIMIT 1').get(req.targetUser.id)) return res.status(409).json({ message: 'Este usuario tiene registros de radioterapia. Desactívalo para conservar su historial.' });
     db.prepare('DELETE FROM users WHERE id = ?').run(req.targetUser.id);
-    writeAudit(req.user, 'user.deleted', 'user', req.targetUser.id);
+    writeAudit(req, req.user, 'user.deleted', 'user', req.targetUser.id);
     res.json({ message: 'Usuario eliminado.' });
   });
   app.use('/api/records', auth);
@@ -327,7 +431,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     if (req.record.arrived_at) return res.json({ record: req.record, message: 'La llegada del paciente ya estaba registrada.' });
     const arrivedAt = new Date().toISOString();
     db.prepare('UPDATE records SET arrival_time = ?, arrived_at = ?, updated_at = ? WHERE id = ? AND arrived_at IS NULL').run(arrivalTime, arrivedAt, arrivedAt, req.record.id);
-    writeAudit(req.user, 'record.arrival_recorded', 'record', req.record.id);
+    writeAudit(req, req.user, 'record.arrival_recorded', 'record', req.record.id);
     const updated = db.prepare('SELECT records.*, users.name AS author, (SELECT requested_at FROM network_assistance WHERE record_id = records.id AND status = \'Solicitada\') AS assistance_requested_at FROM records JOIN users ON users.id = records.created_by WHERE records.id = ?').get(req.record.id);
     res.json({ record: updated, message: 'Llegada registrada. Ya puedes solicitar internet.' });
   });
@@ -338,14 +442,14 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     if (existing) return res.json({ request: existing, message: 'La asistencia ya está solicitada. Tu ingeniero va en camino.' });
     const result = db.prepare('INSERT INTO network_assistance (record_id, requested_by, requester_name, requested_at) VALUES (?, ?, ?, ?)').run(req.record.id, req.user.id, req.user.name, new Date().toISOString());
     const requestId = Number(result.lastInsertRowid);
-    writeAudit(req.user, 'network.requested', 'network_assistance', requestId);
+    writeAudit(req, req.user, 'network.requested', 'network_assistance', requestId);
     res.status(201).json({ request: db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(requestId), message: 'Tu ingeniero va en camino' });
   });
   app.post('/api/records', requirePermission('radiotherapy.create'), (req, res) => {
     const record = validateRecord(req.body || {}), now = new Date().toISOString();
     const result = db.prepare('INSERT INTO records (title, date, area, responsible, description, observations, status, priority, created_by, created_at, updated_at, patient_name, arrival_time, treatment_time, rfc, surgery_type, entitlement_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(record.patient_name, record.date, 'Radioterapia', req.user.name, '', record.observations, record.status, 'Normal', req.user.id, now, now, record.patient_name, record.arrival_time, record.treatment_time, record.rfc, record.surgery_type, record.entitlement_type);
     const id = Number(result.lastInsertRowid);
-    writeAudit(req.user, 'record.created', 'record', id);
+    writeAudit(req, req.user, 'record.created', 'record', id);
     res.status(201).json({ record: db.prepare('SELECT * FROM records WHERE id = ?').get(id) });
   });
   app.put('/api/records/:id', requirePermission('radiotherapy.update'), findRecord, (req, res) => {
@@ -355,13 +459,13 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     else if (record.status === 'En proceso' && req.record.status !== 'En proceso') { treatmentStartedAt = now; treatmentCompletedAt = null; }
     else if (record.status === 'Completada' && req.record.status !== 'Completada') treatmentCompletedAt = now;
     db.prepare('UPDATE records SET patient_name = ?, date = ?, arrival_time = ?, treatment_time = ?, observations = ?, status = ?, rfc = ?, surgery_type = ?, entitlement_type = ?, treatment_started_at = ?, treatment_completed_at = ?, updated_at = ? WHERE id = ?').run(record.patient_name, record.date, record.arrival_time, record.treatment_time, record.observations, record.status, record.rfc, record.surgery_type, record.entitlement_type, treatmentStartedAt, treatmentCompletedAt, now, req.record.id);
-    writeAudit(req.user, 'record.updated', 'record', req.record.id);
-    if (record.status !== req.record.status) writeAudit(req.user, 'record.status_changed', 'record', req.record.id);
+    writeAudit(req, req.user, 'record.updated', 'record', req.record.id);
+    if (record.status !== req.record.status) writeAudit(req, req.user, 'record.status_changed', 'record', req.record.id);
     res.json({ record: db.prepare('SELECT * FROM records WHERE id = ?').get(req.record.id) });
   });
   app.delete('/api/records/:id', requirePermission('radiotherapy.delete'), findRecord, (req, res) => {
     db.prepare('DELETE FROM records WHERE id = ?').run(req.record.id);
-    writeAudit(req.user, 'record.deleted', 'record', req.record.id);
+    writeAudit(req, req.user, 'record.deleted', 'record', req.record.id);
     res.json({ message: 'Bitácora eliminada.' });
   });
   function recognitionPeriod(month) {
@@ -412,7 +516,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
       if (assignedTo !== null && (!Number.isSafeInteger(assignedTo) || assignedTo < 1)) return res.status(400).json({ message: 'Selecciona una persona válida de Redes.' });
       if (assignedTo !== null && !db.prepare("SELECT users.id FROM users WHERE users.id = ? AND users.active = 1 AND (users.is_admin = 1 OR EXISTS (SELECT 1 FROM user_permissions WHERE user_id = users.id AND permission = 'networks.update'))").get(assignedTo)) return res.status(400).json({ message: 'La persona seleccionada no tiene permiso activo para atender solicitudes de Redes.' });
       db.prepare('UPDATE network_assistance SET assigned_to = ? WHERE id = ? AND status = \'Solicitada\'').run(assignedTo, assistance.id);
-      writeAudit(req.user, 'network.assigned', 'network_assistance', assistance.id);
+      writeAudit(req, req.user, 'network.assigned', 'network_assistance', assistance.id);
       return res.json({ request: db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(assistance.id), message: assignedTo === null ? 'Solicitud sin asignar.' : 'Solicitud asignada.' });
     }
     if (req.body?.status !== 'Atendida') return res.status(400).json({ message: 'Selecciona Atendida para completar la solicitud.' });
@@ -421,7 +525,7 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
     db.exec('BEGIN');
     try {
       changes = db.prepare("UPDATE network_assistance SET status = 'Atendida', handled_by = ?, handled_at = ? WHERE id = ? AND status = 'Solicitada'").run(req.user.id, handledAt, assistance.id).changes;
-      if (changes) writeAudit(req.user, 'network.completed', 'network_assistance', assistance.id, { engineer_id: req.user.id, record_id: assistance.record_id, handled_at: handledAt });
+      if (changes) writeAudit(req, req.user, 'network.completed', 'network_assistance', assistance.id, { engineer_id: req.user.id, record_id: assistance.record_id, handled_at: handledAt });
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     const completedRequest = db.prepare('SELECT * FROM network_assistance WHERE id = ?').get(assistance.id);
@@ -430,8 +534,9 @@ export async function createApp({ databasePath, adminEmail = process.env.ADMIN_E
   app.use((_req, res) => res.status(404).json({ message: 'Ruta no encontrada.' }));
   app.use((error, _req, res, _next) => {
     const status = error.status || 500;
-    if (status >= 500) console.error('Error de API:', error.message);
-    res.status(status).json({ message: status === 413 ? 'La solicitud es demasiado grande.' : status >= 500 ? 'No se pudo completar la operación.' : error.type === 'entity.parse.failed' ? 'La solicitud no contiene JSON válido.' : error.message });
+    if (status >= 500 && status !== 503) console.error('Error de API:', error.message);
+    if (error.retryAfter) res.set('Retry-After', String(error.retryAfter));
+    res.status(status).json({ message: status === 413 ? 'La solicitud es demasiado grande.' : status >= 500 && status !== 503 ? 'No se pudo completar la operación.' : error.type === 'entity.parse.failed' ? 'La solicitud no contiene JSON válido.' : error.message });
   });
   return { app, db };
 }

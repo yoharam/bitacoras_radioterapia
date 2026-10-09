@@ -27,14 +27,14 @@ test('login muestra seda tinto animada sin tapar el contenido ni el formulario',
   await expect(canvas).toHaveCSS('pointer-events', 'none');
   await expect(page.getByRole('heading', { name: 'Cada paciente, a su tiempo.' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Iniciar sesión' })).toBeVisible();
-  await page.getByLabel('Correo electrónico').fill('personal@institucion.gob.mx');
-  await page.getByLabel('Correo electrónico').press('Tab');
+  await page.getByLabel('Usuario o correo electrónico').fill('personal@institucion.gob.mx');
+  await page.getByLabel('Usuario o correo electrónico').press('Tab');
   await expect(page.getByLabel('Contraseña', { exact: true })).toBeFocused();
   await expect(page.getByRole('button', { name: 'Entrar al sistema' })).toBeEnabled();
   const first = await canvas.screenshot();
   await page.waitForTimeout(1200);
   expect(first.equals(await canvas.screenshot())).toBe(false);
-  await page.getByLabel('Correo electrónico').fill('');
+  await page.getByLabel('Usuario o correo electrónico').fill('');
   expect(errors).toEqual([]);
   await capture(page, 'login-silk-desktop');
 });
@@ -72,7 +72,7 @@ test('login móvil no anima un panel oculto y conserva el formulario sin desbord
   await expect(silk).toHaveAttribute('data-motion', 'idle');
   await expect(silk.locator('canvas')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Iniciar sesión' })).toBeVisible();
-  await expect(page.getByLabel('Correo electrónico')).toBeVisible();
+  await expect(page.getByLabel('Usuario o correo electrónico')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await capture(page, 'login-silk-mobile');
   await page.setViewportSize({ width: 1440, height: 1000 });

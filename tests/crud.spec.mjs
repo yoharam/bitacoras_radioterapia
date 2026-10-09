@@ -18,7 +18,7 @@ for (const width of sizes) {
     page.on('pageerror', error => errors.push(error.message));
     const noOverflow = async () => expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.goto('/');
-    await page.getByLabel('Correo electrónico', { exact: true }).fill('admin@bitacoras.local');
+    await page.getByLabel('Usuario o correo electrónico', { exact: true }).fill(width === 320 ? 'admin' : 'admin@bitacoras.local');
     await page.getByLabel('Contraseña', { exact: true }).fill('Bitacoras2026!');
     await noOverflow();
     await page.getByRole('button', { name: 'Entrar al sistema' }).click();
@@ -26,8 +26,9 @@ for (const width of sizes) {
     const patient = `Paciente de prueba María López Hernández ${width} ${Date.now()}`;
     await page.getByRole('button', { name: 'Registrar paciente', exact: true }).click();
     await page.getByLabel('Nombre del paciente *', { exact: true }).fill(patient);
-    await page.getByLabel('RFC', { exact: true }).fill('lohm900101ab1');
-    await expect(page.getByLabel('RFC', { exact: true })).toHaveValue('LOHM900101AB1');
+    const initialRfc = width === 320 ? '' : width === 390 ? 'LOHM900101' : 'LOHM900101AB1';
+    await page.getByLabel('RFC', { exact: true }).fill(initialRfc.toLowerCase());
+    await expect(page.getByLabel('RFC', { exact: true })).toHaveValue(initialRfc);
     await page.getByLabel('Tipo de cirugía', { exact: true }).selectOption('Hospitalizado');
     const entitlement = page.getByRole('combobox', { name: 'Tipo de derechohabiencia', exact: true });
     await entitlement.click();
@@ -58,7 +59,7 @@ for (const width of sizes) {
     await page.getByRole('button', { name: 'Cerrar', exact: true }).click();
     await expect(row).toContainText('jueves, 8 de octubre de 2026');
     await expect(row).toContainText('08:45');
-    await expect(row).toContainText('LOHM900101AB1');
+    await expect(row).toContainText(initialRfc || 'Sin registrar');
     await expect(row).toContainText('Hospitalizado');
     await expect(row).toContainText('95 · IMSS BIENESTAR Hombre');
     if (width < 640) await page.getByRole('button', { name: 'Más filtros', exact: true }).click();
@@ -71,11 +72,11 @@ for (const width of sizes) {
     await expect(record).toBeVisible();
     await record.click();
     await expect(page.getByRole('dialog')).toContainText('08:45');
-    await expect(page.getByRole('dialog')).toContainText('LOHM900101AB1');
+    await expect(page.getByRole('dialog')).toContainText(initialRfc || 'Sin registrar');
     await expect(page.getByRole('dialog')).toContainText('Hospitalizado');
     await expect(page.getByRole('dialog')).toContainText('95 · IMSS BIENESTAR Hombre');
     await page.getByRole('button', { name: 'Editar registro', exact: true }).click();
-    await expect(page.getByLabel('RFC', { exact: true })).toHaveValue('LOHM900101AB1');
+    await expect(page.getByLabel('RFC', { exact: true })).toHaveValue(initialRfc);
     await expect(page.getByLabel('Tipo de cirugía', { exact: true })).toHaveValue('Hospitalizado');
     await expect(entitlement).toHaveValue('95 · IMSS BIENESTAR Hombre');
     await entitlement.fill('inventado');
