@@ -95,3 +95,6 @@ try {
 } finally {
     Remove-Item -LiteralPath $temporary -Recurse -Force
 }
+# One assertion deliberately runs a failing native command. Do not let its exit
+# code survive a successful suite into GitHub's Windows PowerShell wrapper.
+$global:LASTEXITCODE = 0
